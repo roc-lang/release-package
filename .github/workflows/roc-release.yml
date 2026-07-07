@@ -1,0 +1,628 @@
+name: Roc Release
+
+on:
+  workflow_call:
+    inputs:
+      release_version:
+        description: "Semver release version. Example: 1.12.0."
+        required: true
+        type: string
+      roc_version:
+        description: "Roc version passed to setup-roc."
+        default: nightly-new-compiler
+        type: string
+      roc_nightly_tag:
+        description: "Optional nightly tag passed to setup-roc when roc_version is nightly-new-compiler."
+        default: ""
+        type: string
+      setup_roc:
+        description: "Whether to use the shared setup-roc step when setup_roc_command is empty."
+        default: true
+        type: boolean
+      setup_roc_command:
+        description: "Optional repo-owned Roc setup command for repos that build Roc from source."
+        default: ""
+        type: string
+      setup_build_command:
+        description: "Optional repo-owned command for build-job setup or host builds."
+        default: ""
+        type: string
+      setup_test_command:
+        description: "Optional repo-owned command for test-job setup."
+        default: ""
+        type: string
+      validate_command:
+        description: "Command that validates source before bundling."
+        default: ./ci/all_tests.sh
+        type: string
+      bump_check:
+        description: "How to handle roc bump verification. One of warn, require, or off."
+        default: require
+        type: string
+      bump_entrypoint:
+        description: "Package entrypoint passed to roc bump."
+        default: main.roc
+        type: string
+      previous_release_url:
+        description: "Previous bundle URL for roc bump. Empty means latest GitHub release asset."
+        default: ""
+        type: string
+      bundle_command:
+        description: "Command that creates release artifacts."
+        required: true
+        type: string
+      bundle_glob:
+        description: "Glob for release artifacts produced by bundle_command."
+        default: dist/*.tar.zst
+        type: string
+      bundle_manifest_path:
+        description: "Optional JSON manifest produced by bundle_command for multi-bundle releases."
+        default: ""
+        type: string
+      test_bundle_command:
+        description: "Command run with one bundle artifact path at a time."
+        default: ""
+        type: string
+      test_os_json:
+        description: "JSON array of GitHub runner labels used when no bundle manifest is provided."
+        default: '["ubuntu-latest","macos-latest","windows-latest"]'
+        type: string
+      release_notes_command:
+        description: "Optional command that writes custom release notes to RELEASE_NOTES_PATH."
+        default: ""
+        type: string
+      publish_docs:
+        description: "Whether to generate and publish versioned docs."
+        default: true
+        type: boolean
+      docs_command:
+        description: "Command that generates docs."
+        default: './docs.sh "$RELEASE_VERSION"'
+        type: string
+      docs_root:
+        description: "Directory containing generated docs to publish."
+        default: www
+        type: string
+      docs_version:
+        description: "Optional docs version directory. Empty means release_version."
+        default: ""
+        type: string
+      update_docs_index:
+        description: "Whether to update the docs root redirect/index to this release."
+        default: true
+        type: boolean
+      commit_docs:
+        description: "Whether to commit docs back to the release branch before Pages deploy."
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build release bundles
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.release_version.outputs.release_version }}
+      docs_version: ${{ steps.docs_version.outputs.docs_version }}
+      test_matrix: ${{ steps.prepare_bundles.outputs.test_matrix }}
+      release_bundles: ${{ steps.prepare_bundles.outputs.release_bundles }}
+    steps:
+      - name: Checkout package repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release-package ref
+        id: release_package
+        shell: bash
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$WORKFLOW_REF" != *"/.github/workflows/"*"@"* ]]; then
+            echo "Could not parse github.workflow_ref: $WORKFLOW_REF" >&2
+            exit 1
+          fi
+          repository="${WORKFLOW_REF%%/.github/workflows/*}"
+          ref="${WORKFLOW_REF##*@}"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release-package tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          repository: ${{ steps.release_package.outputs.repository }}
+          ref: ${{ steps.release_package.outputs.ref }}
+          path: .release-package
+
+      - name: Validate release version
+        id: release_version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          python3 .release-package/scripts/release/release.py validate-version "$RELEASE_VERSION"
+          echo "RELEASE_VERSION=$RELEASE_VERSION" >> "$GITHUB_ENV"
+          echo "release_version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve docs version
+        id: docs_version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          DOCS_VERSION_INPUT: ${{ inputs.docs_version }}
+        run: |
+          set -euo pipefail
+          docs_version="$DOCS_VERSION_INPUT"
+          if [[ -z "$docs_version" ]]; then
+            docs_version="$RELEASE_VERSION"
+          fi
+          python3 .release-package/scripts/release/release.py validate-version "$docs_version"
+          echo "DOCS_VERSION=$docs_version" >> "$GITHUB_ENV"
+          echo "docs_version=$docs_version" >> "$GITHUB_OUTPUT"
+
+      - name: Require bundle test command
+        shell: bash
+        env:
+          TEST_BUNDLE_COMMAND: ${{ inputs.test_bundle_command }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TEST_BUNDLE_COMMAND" ]]; then
+            echo "test_bundle_command is required for publishing releases." >&2
+            exit 1
+          fi
+
+      - name: Check tag and release availability
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.release_version.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          python3 .release-package/scripts/release/release.py check-availability "$RELEASE_VERSION"
+
+      - name: Setup Roc with setup-roc
+        if: ${{ inputs.setup_roc && inputs.setup_roc_command == '' }}
+        uses: roc-lang/setup-roc@66d1ae2def87ec77b8670e9ac09c418df2f18c86
+        with:
+          version: ${{ inputs.roc_version }}
+          nightly-tag: ${{ inputs.roc_nightly_tag }}
+
+      - name: Setup Roc with custom command
+        if: ${{ inputs.setup_roc_command != '' }}
+        shell: bash
+        env:
+          SETUP_ROC_COMMAND: ${{ inputs.setup_roc_command }}
+        run: |
+          set -euo pipefail
+          bash .release-package/scripts/release/run-command.sh SETUP_ROC_COMMAND
+
+      - name: Run build setup command
+        shell: bash
+        env:
+          SETUP_BUILD_COMMAND: ${{ inputs.setup_build_command }}
+        run: |
+          set -euo pipefail
+          bash .release-package/scripts/release/run-command.sh SETUP_BUILD_COMMAND
+
+      - name: Validate source
+        shell: bash
+        env:
+          VALIDATE_COMMAND: ${{ inputs.validate_command }}
+        run: |
+          set -euo pipefail
+          bash .release-package/scripts/release/run-command.sh VALIDATE_COMMAND
+
+      - name: Resolve previous release bundle
+        id: previous_release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_RELEASE_URL: ${{ inputs.previous_release_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p .release
+          python3 .release-package/scripts/release/release.py resolve-previous-url \
+            --provided-url "$PREVIOUS_RELEASE_URL" \
+            --output-file .release/previous-url.txt
+          previous_url="$(cat .release/previous-url.txt)"
+          echo "previous_url=$previous_url" >> "$GITHUB_OUTPUT"
+
+      - name: Verify version with roc bump
+        shell: bash
+        env:
+          BUMP_CHECK: ${{ inputs.bump_check }}
+          BUMP_ENTRYPOINT: ${{ inputs.bump_entrypoint }}
+          PREVIOUS_URL: ${{ steps.previous_release.outputs.previous_url }}
+          RELEASE_VERSION: ${{ steps.release_version.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          python3 .release-package/scripts/release/release.py run-bump-check \
+            --mode "$BUMP_CHECK" \
+            --version "$RELEASE_VERSION" \
+            --entrypoint "$BUMP_ENTRYPOINT" \
+            --previous-url "$PREVIOUS_URL" \
+            --output-file .release/bump-output.txt
+
+      - name: Build release bundles
+        shell: bash
+        env:
+          BUNDLE_COMMAND: ${{ inputs.bundle_command }}
+        run: |
+          set -euo pipefail
+          bash .release-package/scripts/release/run-command.sh BUNDLE_COMMAND
+
+      - name: Prepare release bundle metadata
+        id: prepare_bundles
+        shell: bash
+        env:
+          BUNDLE_GLOB: ${{ inputs.bundle_glob }}
+          BUNDLE_MANIFEST_PATH: ${{ inputs.bundle_manifest_path }}
+          TEST_OS_JSON: ${{ inputs.test_os_json }}
+        run: |
+          set -euo pipefail
+          python3 .release-package/scripts/release/release.py prepare-bundles \
+            --bundle-glob "$BUNDLE_GLOB" \
+            --bundle-manifest-path "$BUNDLE_MANIFEST_PATH" \
+            --test-os-json "$TEST_OS_JSON" \
+            --workspace "$PWD" \
+            --bundle-dir .release/bundles \
+            --matrix-file .release/test-matrix.json \
+            --release-list-file .release/release-bundles.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload release bundles
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-bundles
+          path: .release/bundles/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-metadata
+          path: |
+            .release/bump-output.txt
+            .release/previous-url.txt
+            .release/release-bundles.json
+            .release/test-matrix.json
+          if-no-files-found: error
+          retention-days: 7
+
+  test-bundles:
+    name: Test ${{ matrix.bundle_name }} on ${{ matrix.os }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.build.outputs.test_matrix) }}
+    steps:
+      - name: Checkout package repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Resolve release-package ref
+        id: release_package
+        shell: bash
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$WORKFLOW_REF" != *"/.github/workflows/"*"@"* ]]; then
+            echo "Could not parse github.workflow_ref: $WORKFLOW_REF" >&2
+            exit 1
+          fi
+          repository="${WORKFLOW_REF%%/.github/workflows/*}"
+          ref="${WORKFLOW_REF##*@}"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release-package tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          repository: ${{ steps.release_package.outputs.repository }}
+          ref: ${{ steps.release_package.outputs.ref }}
+          path: .release-package
+
+      - name: Setup Roc with setup-roc
+        if: ${{ inputs.setup_roc && inputs.setup_roc_command == '' }}
+        uses: roc-lang/setup-roc@66d1ae2def87ec77b8670e9ac09c418df2f18c86
+        with:
+          version: ${{ inputs.roc_version }}
+          nightly-tag: ${{ inputs.roc_nightly_tag }}
+
+      - name: Setup Roc with custom command
+        if: ${{ inputs.setup_roc_command != '' }}
+        shell: bash
+        env:
+          SETUP_ROC_COMMAND: ${{ inputs.setup_roc_command }}
+        run: |
+          set -euo pipefail
+          bash .release-package/scripts/release/run-command.sh SETUP_ROC_COMMAND
+
+      - name: Download release bundle artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-bundles
+          path: .release/test-bundles
+
+      - name: Run test setup command
+        shell: bash
+        env:
+          SETUP_TEST_COMMAND: ${{ inputs.setup_test_command }}
+        run: |
+          set -euo pipefail
+          bash .release-package/scripts/release/run-command.sh SETUP_TEST_COMMAND
+
+      - name: Test release bundle
+        shell: bash
+        env:
+          TEST_BUNDLE_COMMAND: ${{ inputs.test_bundle_command }}
+          BUNDLE_NAME: ${{ matrix.bundle_name }}
+          BUNDLE_PATH: ${{ github.workspace }}/.release/test-bundles/${{ matrix.artifact_file }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$BUNDLE_PATH" ]]; then
+            echo "Bundle artifact is missing: $BUNDLE_PATH" >&2
+            exit 1
+          fi
+          bash .release-package/scripts/release/run-command.sh --append-args TEST_BUNDLE_COMMAND "$BUNDLE_PATH"
+
+  publish-release:
+    name: Publish GitHub release
+    needs:
+      - build
+      - test-bundles
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout package repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release-package ref
+        id: release_package
+        shell: bash
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$WORKFLOW_REF" != *"/.github/workflows/"*"@"* ]]; then
+            echo "Could not parse github.workflow_ref: $WORKFLOW_REF" >&2
+            exit 1
+          fi
+          repository="${WORKFLOW_REF%%/.github/workflows/*}"
+          ref="${WORKFLOW_REF##*@}"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release-package tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          repository: ${{ steps.release_package.outputs.repository }}
+          ref: ${{ steps.release_package.outputs.ref }}
+          path: .release-package
+
+      - name: Download release bundle artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-bundles
+          path: .release/bundles
+
+      - name: Download release metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-metadata
+          path: .release
+
+      - name: Re-check tag and release availability
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          python3 .release-package/scripts/release/release.py check-availability "$RELEASE_VERSION"
+
+      - name: Run custom release notes command
+        if: ${{ inputs.release_notes_command != '' }}
+        shell: bash
+        env:
+          RELEASE_NOTES_COMMAND: ${{ inputs.release_notes_command }}
+          RELEASE_NOTES_PATH: ${{ github.workspace }}/.release/release-notes.md
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+          RELEASE_BUNDLES_PATH: ${{ github.workspace }}/.release/release-bundles.json
+        run: |
+          set -euo pipefail
+          bash .release-package/scripts/release/run-command.sh RELEASE_NOTES_COMMAND
+
+      - name: Generate default release notes
+        if: ${{ inputs.release_notes_command == '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          python3 .release-package/scripts/release/release.py make-release-notes \
+            --repo "$GITHUB_REPOSITORY" \
+            --version "$RELEASE_VERSION" \
+            --target "$GITHUB_SHA" \
+            --bump-output .release/bump-output.txt \
+            --output-file .release/release-notes.md
+
+      - name: Validate release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -s .release/release-notes.md ]]; then
+            echo "Release notes file is missing or empty: .release/release-notes.md" >&2
+            exit 1
+          fi
+
+      - name: Create tag and GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(.release/bundles/*)
+          if [[ ${#assets[@]} -eq 0 ]]; then
+            echo "No release bundle assets found." >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$RELEASE_VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/$RELEASE_VERSION"
+          gh release create "$RELEASE_VERSION" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_VERSION" \
+            --notes-file .release/release-notes.md
+
+  publish-docs:
+    name: Publish versioned docs
+    needs:
+      - build
+      - publish-release
+    if: ${{ inputs.publish_docs }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout package repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release-package ref
+        id: release_package
+        shell: bash
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$WORKFLOW_REF" != *"/.github/workflows/"*"@"* ]]; then
+            echo "Could not parse github.workflow_ref: $WORKFLOW_REF" >&2
+            exit 1
+          fi
+          repository="${WORKFLOW_REF%%/.github/workflows/*}"
+          ref="${WORKFLOW_REF##*@}"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release-package tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          repository: ${{ steps.release_package.outputs.repository }}
+          ref: ${{ steps.release_package.outputs.ref }}
+          path: .release-package
+
+      - name: Setup Roc with setup-roc
+        if: ${{ inputs.setup_roc && inputs.setup_roc_command == '' }}
+        uses: roc-lang/setup-roc@66d1ae2def87ec77b8670e9ac09c418df2f18c86
+        with:
+          version: ${{ inputs.roc_version }}
+          nightly-tag: ${{ inputs.roc_nightly_tag }}
+
+      - name: Setup Roc with custom command
+        if: ${{ inputs.setup_roc_command != '' }}
+        shell: bash
+        env:
+          SETUP_ROC_COMMAND: ${{ inputs.setup_roc_command }}
+        run: |
+          set -euo pipefail
+          bash .release-package/scripts/release/run-command.sh SETUP_ROC_COMMAND
+
+      - name: Snapshot existing docs versions
+        shell: bash
+        env:
+          DOCS_ROOT: ${{ inputs.docs_root }}
+        run: |
+          set -euo pipefail
+          mkdir -p .release
+          python3 .release-package/scripts/release/release.py snapshot-docs \
+            --docs-root "$DOCS_ROOT" \
+            --snapshot-file .release/docs-before.json
+
+      - name: Generate docs
+        shell: bash
+        env:
+          DOCS_COMMAND: ${{ inputs.docs_command }}
+          DOCS_ROOT: ${{ inputs.docs_root }}
+          DOCS_VERSION: ${{ needs.build.outputs.docs_version }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          bash .release-package/scripts/release/run-command.sh DOCS_COMMAND
+
+      - name: Update docs root redirect
+        if: ${{ inputs.update_docs_index }}
+        shell: bash
+        env:
+          DOCS_ROOT: ${{ inputs.docs_root }}
+          DOCS_VERSION: ${{ needs.build.outputs.docs_version }}
+        run: |
+          set -euo pipefail
+          python3 .release-package/scripts/release/release.py write-docs-index \
+            --docs-root "$DOCS_ROOT" \
+            --docs-version "$DOCS_VERSION" \
+            --repo-name "${GITHUB_REPOSITORY#*/}"
+
+      - name: Validate docs tree
+        shell: bash
+        env:
+          DOCS_ROOT: ${{ inputs.docs_root }}
+          DOCS_VERSION: ${{ needs.build.outputs.docs_version }}
+        run: |
+          set -euo pipefail
+          python3 .release-package/scripts/release/release.py validate-docs \
+            --docs-root "$DOCS_ROOT" \
+            --docs-version "$DOCS_VERSION" \
+            --snapshot-file .release/docs-before.json
+
+      - name: Commit docs
+        if: ${{ inputs.commit_docs }}
+        shell: bash
+        env:
+          DOCS_ROOT: ${{ inputs.docs_root }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$DOCS_ROOT"
+          if git diff --cached --quiet -- "$DOCS_ROOT"; then
+            echo "Docs did not change; skipping docs commit."
+          else
+            git commit -m "Update docs for $RELEASE_VERSION"
+            git push
+          fi
+
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
+        with:
+          path: ${{ inputs.docs_root }}
+
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128
