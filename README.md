@@ -54,7 +54,8 @@ availability checks for that synthetic version; when a real `release_version`
 is provided, availability is still checked even in dry-run mode so duplicate
 versions fail before merge. It outputs `is_dry_run`, `release_base_version`,
 and `is_prerelease`, so `1.2.3-rc1` can publish as `1.2.3-rc1` while release
-checks use `1.2.3`. `run-bump-check` writes a skipped bump output in dry-run
+availability checks still use the full prerelease tag and bump checks use
+`1.2.3`. `run-bump-check` writes a skipped bump output in dry-run
 mode without calling `roc`.
 
 Actions that call the GitHub API or `gh` accept `github_token`; pass
@@ -91,7 +92,7 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: Release version, for example 1.2.3
+        description: Release version, for example 1.2.3 or 1.0.0-rc1
         required: true
 
 permissions:
@@ -236,7 +237,7 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: Release version, for example 0.3.0
+        description: Release version, for example 0.3.0 or 1.0.0-rc1
         required: true
 
 permissions:
@@ -452,7 +453,57 @@ When your workflow publishes docs, also pass `docs_url` to `make-release-notes`
 so the generated notes link to them, for example
 `docs_url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ needs.build.outputs.docs_version }}/`.
 Leave `docs_url` unset in workflows without a docs job so release notes do not
-link to pages that were never published.
+link to pages that were never published. It is fine for release notes to be
+generated before the docs job deploys: the URL is deterministic and starts
+working once Pages deployment finishes.
+
+In the `publish` job, the release-notes step then looks like:
+
+```yaml
+    - uses: roc-lang/release-package/actions/make-release-notes@<release-package-ref>
+      with:
+        release_version: ${{ needs.build.outputs.release_version }}
+        github_token: ${{ github.token }}
+        docs_url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ needs.build.outputs.docs_version }}/
+```
+
+## Release Candidates
+
+Release candidates use the same manual release workflow as stable releases. To
+publish an RC, trigger `workflow_dispatch` with `release_version` set to the
+full prerelease version, for example `1.2.3-rc1`. The prerelease suffix is the
+only RC-specific input; do not add a separate workflow flag unless your caller
+repo needs extra policy.
+
+For `1.2.3-rc1`, the actions behave this way:
+
+- `validate-release` validates `1.2.3-rc1`, checks that the matching tag and
+  GitHub release do not already exist, outputs `release_base_version=1.2.3`,
+  and sets `is_prerelease=true`.
+- `resolve-previous-release` still resolves GitHub's latest stable release as
+  the previous bundle. `run-bump-check` passes the base version (`1.2.3`) to
+  `roc bump --expect`, so the API check compares the RC against the last stable
+  package rather than a previous RC.
+- Bundles and bundle tests run the same way as a stable release. Test commands
+  receive `RELEASE_VERSION=1.2.3-rc1`.
+- `make-release-notes` writes notes for the RC tag. When `docs_url` is set, the
+  notes include a direct link to the exact RC docs directory, such as
+  `https://example.github.io/package/1.2.3-rc1/`.
+- `publish-release` creates tag `1.2.3-rc1` and marks the GitHub release as a
+  prerelease automatically.
+- `docs-index` leaves the root docs redirect pointed at the current stable
+  release by default. RC docs can still be committed and deployed under
+  `www/1.2.3-rc1/`; users reach them from the direct release-notes link.
+
+If you publish multiple RCs, the default bump baseline remains the latest stable
+release each time. Set `previous_release_url` explicitly only for an unusual
+backport, recovery run, or workflow that intentionally compares one RC against
+another.
+
+When the RC is accepted, run the same workflow with the stable version, for
+example `1.2.3`. The stable release gets its own tag and GitHub release, docs
+are generated under `www/1.2.3/`, and `docs-index` updates the root redirect to
+the stable docs.
 
 ## Artifact Conventions
 
