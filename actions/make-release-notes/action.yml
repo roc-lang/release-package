@@ -85,4 +85,7 @@ runs:
           echo "Release notes file is missing or empty: $RELEASE_NOTES_FILE" >&2
           exit 1
         fi
-        echo "release_notes_file=$RELEASE_NOTES_FILE" >> "$GITHUB_OUTPUT"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name release_notes_file \
+          --value "$RELEASE_NOTES_FILE"

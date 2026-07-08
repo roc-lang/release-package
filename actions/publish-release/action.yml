@@ -10,6 +10,9 @@ inputs:
   bundle_dir:
     description: Directory containing release bundle assets.
     default: .release/bundles
+  release_list_file:
+    description: File listing release bundle assets produced by prepare-bundles.
+    default: .release/release-bundles.json
   repo:
     description: GitHub repository in owner/name form. Empty uses GITHUB_REPOSITORY.
     default: ""
@@ -31,6 +34,7 @@ runs:
         RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
         RELEASE_NOTES_FILE: ${{ inputs.release_notes_file }}
         BUNDLE_DIR: ${{ inputs.bundle_dir }}
+        RELEASE_LIST_FILE: ${{ inputs.release_list_file }}
         REPO_INPUT: ${{ inputs.repo }}
         TARGET_INPUT: ${{ inputs.target }}
         CHECK_AVAILABILITY: ${{ inputs.check_availability }}
@@ -79,4 +83,5 @@ runs:
           --target "$target" \
           --notes-file "$RELEASE_NOTES_FILE" \
           --bundle-dir "$BUNDLE_DIR" \
+          --release-list-file "$RELEASE_LIST_FILE" \
           "${publish_args[@]}"

@@ -24,4 +24,7 @@ runs:
         python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" snapshot-docs \
           --docs-root "$DOCS_ROOT" \
           --snapshot-file "$SNAPSHOT_FILE"
-        echo "snapshot_file=$SNAPSHOT_FILE" >> "$GITHUB_OUTPUT"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name snapshot_file \
+          --value "$SNAPSHOT_FILE"

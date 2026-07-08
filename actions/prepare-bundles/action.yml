@@ -69,6 +69,15 @@ runs:
           --release-list-file "$RELEASE_LIST_FILE" \
           --github-output "$GITHUB_OUTPUT"
 
-        echo "bundle_dir=$BUNDLE_DIR" >> "$GITHUB_OUTPUT"
-        echo "matrix_file=$MATRIX_FILE" >> "$GITHUB_OUTPUT"
-        echo "release_list_file=$RELEASE_LIST_FILE" >> "$GITHUB_OUTPUT"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name bundle_dir \
+          --value "$BUNDLE_DIR"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name matrix_file \
+          --value "$MATRIX_FILE"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name release_list_file \
+          --value "$RELEASE_LIST_FILE"

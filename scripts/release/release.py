@@ -65,6 +65,12 @@ def main() -> int:
     compact.add_argument("path")
     compact.set_defaults(func=cmd_compact_json)
 
+    github_output = subcommands.add_parser("append-github-output")
+    github_output.add_argument("--github-output", required=True)
+    github_output.add_argument("--name", required=True)
+    github_output.add_argument("--value", required=True)
+    github_output.set_defaults(func=cmd_append_github_output)
+
     notes = subcommands.add_parser("make-release-notes")
     notes.add_argument("--repo", required=True)
     notes.add_argument("--version", required=True)
@@ -79,6 +85,7 @@ def main() -> int:
     publish.add_argument("--target", default=os.environ.get("GITHUB_SHA", ""))
     publish.add_argument("--notes-file", required=True)
     publish.add_argument("--bundle-dir", required=True)
+    publish.add_argument("--release-list-file", required=True)
     publish.add_argument("--skip-availability-check", action="store_true")
     publish.set_defaults(func=cmd_publish_release)
 
@@ -137,7 +144,8 @@ def cmd_check_availability(args: argparse.Namespace) -> int:
 
 def cmd_resolve_previous_url(args: argparse.Namespace) -> int:
     if args.provided_url:
-        write_text(args.output_file, args.provided_url + "\n")
+        previous_url = require_single_line(args.provided_url, "previous release URL")
+        write_text(args.output_file, previous_url + "\n")
         return 0
 
     repo = require_repo(args.repo)
@@ -165,7 +173,10 @@ def cmd_resolve_previous_url(args: argparse.Namespace) -> int:
             "latest release has multiple .tar.zst assets; set previous_release_url explicitly"
         )
 
-    write_text(args.output_file, (matches[0] if matches else "") + "\n")
+    previous_url = matches[0] if matches else ""
+    if previous_url:
+        previous_url = require_single_line(previous_url, "previous release URL")
+    write_text(args.output_file, previous_url + "\n")
     return 0
 
 
@@ -212,13 +223,19 @@ def cmd_run_bump_check(args: argparse.Namespace) -> int:
 
 def cmd_prepare_bundles(args: argparse.Namespace) -> int:
     workspace = Path(args.workspace).resolve()
-    bundle_dir = Path(args.bundle_dir)
-    matrix_file = Path(args.matrix_file)
-    release_list_file = Path(args.release_list_file)
+    bundle_dir = safe_workspace_output_path(args.bundle_dir, workspace, "bundle_dir")
+    matrix_file = safe_workspace_output_path(args.matrix_file, workspace, "matrix_file")
+    release_list_file = safe_workspace_output_path(
+        args.release_list_file, workspace, "release_list_file"
+    )
 
     glob_paths = find_bundle_glob(args.bundle_glob, workspace)
     if not glob_paths:
         raise ReleaseError(f"bundle_glob matched no files: {args.bundle_glob}")
+
+    for path in glob_paths:
+        if path_is_relative_to(path, bundle_dir):
+            raise ReleaseError("bundle_dir must not contain files matched by bundle_glob")
 
     if args.bundle_manifest_path:
         bundles = bundles_from_manifest(args.bundle_manifest_path, workspace)
@@ -244,6 +261,8 @@ def cmd_prepare_bundles(args: argparse.Namespace) -> int:
     matrix: list[dict[str, str]] = []
     release_list: list[dict[str, str]] = []
 
+    if bundle_dir.exists() and not bundle_dir.is_dir():
+        raise ReleaseError(f"bundle_dir exists but is not a directory: {bundle_dir}")
     if bundle_dir.exists():
         shutil.rmtree(bundle_dir)
     bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -292,6 +311,11 @@ def cmd_compact_json(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_append_github_output(args: argparse.Namespace) -> int:
+    append_github_output(args.github_output, args.name, args.value)
+    return 0
+
+
 def cmd_make_release_notes(args: argparse.Namespace) -> int:
     version = validate_release_version(args.version)
     result = run(
@@ -334,7 +358,7 @@ def cmd_publish_release(args: argparse.Namespace) -> int:
     repo = require_repo(args.repo)
     target = require_target(args.target)
     notes_file = require_nonempty_file(args.notes_file, "release notes file")
-    assets = release_assets(args.bundle_dir)
+    assets = release_assets(args.bundle_dir, args.release_list_file)
 
     if not args.skip_availability_check:
         cmd_check_availability(namespace(version=version, repo=repo))
@@ -573,7 +597,7 @@ def is_meaningful_bump_output(text: str) -> bool:
 
 
 def require_repo(repo: str) -> str:
-    if not repo or "/" not in repo:
+    if not repo or "/" not in repo or "\n" in repo or "\r" in repo:
         raise ReleaseError("GITHUB_REPOSITORY or --repo must be set to owner/name")
     return repo
 
@@ -582,6 +606,12 @@ def require_target(target: str) -> str:
     if not target or "\n" in target or "\r" in target:
         raise ReleaseError("GITHUB_SHA or --target must be set to a commit-ish")
     return target
+
+
+def require_single_line(value: str, description: str) -> str:
+    if "\n" in value or "\r" in value:
+        raise ReleaseError(f"{description} must not contain newlines")
+    return value
 
 
 def require_nonempty_file(path_text: str | Path, description: str) -> Path:
@@ -593,16 +623,72 @@ def require_nonempty_file(path_text: str | Path, description: str) -> Path:
     return path
 
 
-def release_assets(bundle_dir_text: str | Path) -> list[Path]:
+def safe_workspace_output_path(path_text: str | Path, workspace: Path, description: str) -> Path:
+    text = require_single_line(str(path_text), description)
+    if not text:
+        raise ReleaseError(f"{description} is required")
+
+    path = Path(text)
+    candidate = path if path.is_absolute() else workspace / path
+    resolved = candidate.resolve(strict=False)
+    workspace_resolved = workspace.resolve()
+
+    if not path_is_relative_to(resolved, workspace_resolved):
+        raise ReleaseError(f"{description} must resolve inside the workspace: {text}")
+    if resolved == workspace_resolved:
+        raise ReleaseError(f"{description} must not be the workspace root")
+    if resolved == Path(resolved.anchor).resolve():
+        raise ReleaseError(f"{description} must not be the filesystem root")
+    if resolved == Path.home().resolve():
+        raise ReleaseError(f"{description} must not be the home directory")
+
+    return resolved
+
+
+def path_is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
+def release_assets(bundle_dir_text: str | Path, release_list_file_text: str | Path) -> list[Path]:
     bundle_dir = Path(bundle_dir_text)
     if not bundle_dir.is_dir():
         raise ReleaseError(f"release bundle directory is missing: {bundle_dir}")
-    assets = sorted(path for path in bundle_dir.iterdir() if path.is_file())
+
+    release_list_file = require_nonempty_file(release_list_file_text, "release bundle list file")
+    try:
+        release_list = read_json(release_list_file)
+    except json.JSONDecodeError as err:
+        raise ReleaseError(f"release bundle list file is not valid JSON: {err}") from err
+    if not isinstance(release_list, list) or not release_list:
+        raise ReleaseError("release bundle list file must be a non-empty JSON array")
+
+    seen: set[str] = set()
+    assets: list[Path] = []
+    for index, item in enumerate(release_list):
+        if not isinstance(item, dict):
+            raise ReleaseError(f"release bundle list entry {index} must be an object")
+        artifact_file = item.get("artifact_file")
+        if not isinstance(artifact_file, str) or not artifact_file:
+            raise ReleaseError(f"release bundle list entry {index} has invalid artifact_file")
+        require_single_line(artifact_file, "release artifact filename")
+        if "/" in artifact_file or "\\" in artifact_file or Path(artifact_file).name != artifact_file:
+            raise ReleaseError(f"release artifact filename must not contain directories: {artifact_file}")
+        if not artifact_file.endswith(".tar.zst"):
+            raise ReleaseError(f"release artifact filename must end with .tar.zst: {artifact_file}")
+        if artifact_file in seen:
+            raise ReleaseError(f"duplicate release artifact filename: {artifact_file}")
+        seen.add(artifact_file)
+        assets.append(bundle_dir / artifact_file)
+
     if not assets:
         raise ReleaseError(f"release bundle directory has no files: {bundle_dir}")
     for asset in assets:
-        if "\n" in asset.name or "\r" in asset.name:
-            raise ReleaseError(f"release asset filename contains a newline: {asset.name!r}")
+        if not asset.is_file():
+            raise ReleaseError(f"release asset is missing: {asset}")
     return assets
 
 
@@ -649,6 +735,9 @@ def compact_json(data: Any) -> str:
 
 
 def append_github_output(path: str | Path, name: str, value: str) -> None:
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_-]*$", name):
+        raise ReleaseError(f"invalid GitHub output name: {name!r}")
+    require_single_line(value, f"GitHub output {name}")
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(f"{name}={value}\n")
 

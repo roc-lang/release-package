@@ -30,7 +30,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash | bash -s -- 1.7.12
+          version=1.7.12
+          archive="actionlint_${version}_linux_amd64.tar.gz"
+          checksums="actionlint_${version}_checksums.txt"
+          base_url="https://github.com/rhysd/actionlint/releases/download/v${version}"
+          curl -fsSLO "$base_url/$archive"
+          curl -fsSLO "$base_url/$checksums"
+          grep "  $archive\$" "$checksums" > actionlint.sha256
+          sha256sum -c actionlint.sha256
+          tar -xzf "$archive" actionlint
           echo "$PWD" >> "$GITHUB_PATH"
 
       - name: Lint workflows

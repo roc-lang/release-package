@@ -45,6 +45,11 @@ Available actions:
 Actions that call the GitHub API or `gh` accept `github_token`; pass
 `${{ github.token }}` or provide `GH_TOKEN`/`GITHUB_TOKEN` in the job environment.
 
+Command inputs such as `test_bundle_command` and `release_notes_command` execute
+as shell on the runner with the job environment. Treat them as trusted workflow
+code only. Do not derive these strings from pull request text, issue comments,
+release metadata, or untrusted workflow inputs.
+
 ## Example Caller Workflow
 
 ```yaml
@@ -219,6 +224,10 @@ the standard Pages actions:
 It fails if the glob matches nothing, paths escape the workspace, filenames
 collide, or any bundle has no test runner.
 
+Generated files are written under the workspace. `bundle_dir` must not be `/`,
+`$HOME`, the workspace root, or a directory containing the source bundles matched
+by `bundle_glob`.
+
 For a simple release, every matched bundle is tested on every runner in
 `test_os_json`.
 
@@ -246,6 +255,9 @@ For a multi-bundle release, write a manifest and set `bundle_manifest_path`:
 - `RELEASE_VERSION`
 
 It also appends `bundle_path` as the final argument to `test_bundle_command`.
+
+`publish-release` uploads only `.tar.zst` files listed in
+`.release/release-bundles.json`, which is produced by `prepare-bundles`.
 
 ## Docs Contract
 

@@ -45,4 +45,7 @@ runs:
           --docs-root "$DOCS_ROOT" \
           --docs-version "$docs_version" \
           --repo-name "$repo_name"
-        echo "index_file=$DOCS_ROOT/index.html" >> "$GITHUB_OUTPUT"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name index_file \
+          --value "$DOCS_ROOT/index.html"

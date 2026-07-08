@@ -48,5 +48,11 @@ runs:
           "${repo_args[@]}"
 
         previous_url="$(cat "$OUTPUT_FILE")"
-        echo "previous_url=$previous_url" >> "$GITHUB_OUTPUT"
-        echo "output_file=$OUTPUT_FILE" >> "$GITHUB_OUTPUT"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name previous_url \
+          --value "$previous_url"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name output_file \
+          --value "$OUTPUT_FILE"

@@ -67,5 +67,11 @@ runs:
 
         echo "RELEASE_VERSION=$release_version" >> "$GITHUB_ENV"
         echo "DOCS_VERSION=$docs_version" >> "$GITHUB_ENV"
-        echo "release_version=$release_version" >> "$GITHUB_OUTPUT"
-        echo "docs_version=$docs_version" >> "$GITHUB_OUTPUT"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name release_version \
+          --value "$release_version"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name docs_version \
+          --value "$docs_version"

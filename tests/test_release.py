@@ -76,6 +76,51 @@ class ReleaseHelpersTest(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "matched no files"):
             release.cmd_prepare_bundles(args)
 
+    def test_prepare_bundles_rejects_output_dir_outside_workspace(self):
+        self.write("dist/pkg.tar.zst", "bundle")
+        args = namespace(
+            bundle_glob="dist/*.tar.zst",
+            bundle_manifest_path="",
+            test_os_json='["ubuntu-latest"]',
+            workspace=str(self.tmp),
+            bundle_dir=str(self.tmp.parent / "outside-bundles"),
+            matrix_file=str(self.tmp / "matrix.json"),
+            release_list_file=str(self.tmp / "release.json"),
+            github_output="",
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "inside the workspace"):
+            release.cmd_prepare_bundles(args)
+
+    def test_prepare_bundles_rejects_workspace_root_output_dir(self):
+        self.write("dist/pkg.tar.zst", "bundle")
+        args = namespace(
+            bundle_glob="dist/*.tar.zst",
+            bundle_manifest_path="",
+            test_os_json='["ubuntu-latest"]',
+            workspace=str(self.tmp),
+            bundle_dir=str(self.tmp),
+            matrix_file=str(self.tmp / "matrix.json"),
+            release_list_file=str(self.tmp / "release.json"),
+            github_output="",
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "workspace root"):
+            release.cmd_prepare_bundles(args)
+
+    def test_prepare_bundles_rejects_output_dir_containing_source_bundles(self):
+        self.write("dist/pkg.tar.zst", "bundle")
+        args = namespace(
+            bundle_glob="dist/*.tar.zst",
+            bundle_manifest_path="",
+            test_os_json='["ubuntu-latest"]',
+            workspace=str(self.tmp),
+            bundle_dir=str(self.tmp / "dist"),
+            matrix_file=str(self.tmp / "matrix.json"),
+            release_list_file=str(self.tmp / "release.json"),
+            github_output="",
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "must not contain"):
+            release.cmd_prepare_bundles(args)
+
     def test_prepare_bundles_rejects_manifest_missing_glob_entry(self):
         self.write("dist/default.tar.zst", "default")
         self.write("dist/wayland.tar.zst", "wayland")
@@ -235,6 +280,16 @@ class ReleaseHelpersTest(unittest.TestCase):
         finally:
             os.environ["PATH"] = old_path
 
+    def test_resolve_previous_url_rejects_newline_provided_url(self):
+        with self.assertRaisesRegex(release.ReleaseError, "must not contain newlines"):
+            release.cmd_resolve_previous_url(
+                namespace(
+                    provided_url="https://example.com/pkg.tar.zst\nextra=value",
+                    repo="roc-lang/example",
+                    output_file=str(self.tmp / "previous-url.txt"),
+                )
+            )
+
     def test_check_availability_passes_when_tag_and_release_are_absent(self):
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
@@ -343,6 +398,24 @@ class ReleaseHelpersTest(unittest.TestCase):
         finally:
             os.environ["PATH"] = old_path
 
+    def test_append_github_output_rejects_newline_values(self):
+        output = self.tmp / "github-output.txt"
+        with self.assertRaisesRegex(release.ReleaseError, "must not contain newlines"):
+            release.cmd_append_github_output(
+                namespace(
+                    github_output=str(output),
+                    name="previous_url",
+                    value="https://example.com/pkg.tar.zst\nextra=value",
+                )
+            )
+
+    def test_append_github_output_rejects_invalid_names(self):
+        output = self.tmp / "github-output.txt"
+        with self.assertRaisesRegex(release.ReleaseError, "invalid GitHub output name"):
+            release.cmd_append_github_output(
+                namespace(github_output=str(output), name="bad.name", value="ok")
+            )
+
     def test_publish_release_rechecks_availability_and_creates_release(self):
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
@@ -370,6 +443,19 @@ class ReleaseHelpersTest(unittest.TestCase):
         bundle_dir = self.tmp / "bundles"
         bundle_dir.mkdir()
         self.write("bundles/pkg.tar.zst", "bundle")
+        self.write("bundles/debug.txt", "not for release")
+        release_list = self.write(
+            "release-bundles.json",
+            json.dumps(
+                [
+                    {
+                        "name": "default",
+                        "artifact_file": "pkg.tar.zst",
+                        "source_path": "dist/pkg.tar.zst",
+                    }
+                ]
+            ),
+        )
         old_path = os.environ["PATH"]
         old_log = os.environ.get("LOG_PATH")
         os.environ["PATH"] = f"{bin_dir}{os.pathsep}{old_path}"
@@ -383,6 +469,7 @@ class ReleaseHelpersTest(unittest.TestCase):
                         target="abc123",
                         notes_file=str(notes),
                         bundle_dir=str(bundle_dir),
+                        release_list_file=str(release_list),
                         skip_availability_check=False,
                     )
                 ),
@@ -393,6 +480,7 @@ class ReleaseHelpersTest(unittest.TestCase):
             self.assertIn("git:push origin refs/tags/1.2.3", commands)
             self.assertIn("gh:release create 1.2.3", commands)
             self.assertIn(str(bundle_dir / "pkg.tar.zst"), commands)
+            self.assertNotIn("debug.txt", commands)
             self.assertIn("--notes-file", commands)
         finally:
             os.environ["PATH"] = old_path
@@ -422,7 +510,11 @@ class ReleaseHelpersTest(unittest.TestCase):
         notes = self.write("release-notes.md", "Generated notes\n")
         bundle_dir = self.tmp / "bundles"
         bundle_dir.mkdir()
-        with self.assertRaisesRegex(release.ReleaseError, "has no files"):
+        release_list = self.write(
+            "release-bundles.json",
+            json.dumps([{"name": "default", "artifact_file": "pkg.tar.zst"}]),
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "release asset is missing"):
             release.cmd_publish_release(
                 namespace(
                     version="1.2.3",
@@ -430,6 +522,29 @@ class ReleaseHelpersTest(unittest.TestCase):
                     target="abc123",
                     notes_file=str(notes),
                     bundle_dir=str(bundle_dir),
+                    release_list_file=str(release_list),
+                    skip_availability_check=True,
+                )
+            )
+
+    def test_publish_release_rejects_unexpected_asset_extension(self):
+        notes = self.write("release-notes.md", "Generated notes\n")
+        bundle_dir = self.tmp / "bundles"
+        bundle_dir.mkdir()
+        self.write("bundles/pkg.txt", "not a bundle")
+        release_list = self.write(
+            "release-bundles.json",
+            json.dumps([{"name": "default", "artifact_file": "pkg.txt"}]),
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "must end with .tar.zst"):
+            release.cmd_publish_release(
+                namespace(
+                    version="1.2.3",
+                    repo="roc-lang/example",
+                    target="abc123",
+                    notes_file=str(notes),
+                    bundle_dir=str(bundle_dir),
+                    release_list_file=str(release_list),
                     skip_availability_check=True,
                 )
             )
