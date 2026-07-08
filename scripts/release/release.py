@@ -12,11 +12,32 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
-SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+RELEASE_VERSION_RE = re.compile(
+    r"^(?P<base>"
+    r"(?P<major>0|[1-9][0-9]*)\."
+    r"(?P<minor>0|[1-9][0-9]*)\."
+    r"(?P<patch>0|[1-9][0-9]*)"
+    r")(?:-(?P<prerelease>"
+    r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*"
+    r"))?$"
+)
+
+
+@dataclass(frozen=True)
+class ReleaseVersion:
+    full: str
+    base: str
+    prerelease: str
+
+    @property
+    def is_prerelease(self) -> bool:
+        return bool(self.prerelease)
 
 
 class ReleaseError(Exception):
@@ -48,6 +69,7 @@ def main() -> int:
     bump.add_argument("--entrypoint", required=True)
     bump.add_argument("--previous-url", default="")
     bump.add_argument("--output-file", required=True)
+    bump.add_argument("--dry-run", action="store_true")
     bump.set_defaults(func=cmd_run_bump_check)
 
     bundles = subcommands.add_parser("prepare-bundles")
@@ -77,6 +99,7 @@ def main() -> int:
     notes.add_argument("--target", required=True)
     notes.add_argument("--bump-output", required=True)
     notes.add_argument("--output-file", required=True)
+    notes.add_argument("--docs-url", default="")
     notes.set_defaults(func=cmd_make_release_notes)
 
     publish = subcommands.add_parser("publish-release")
@@ -98,6 +121,7 @@ def main() -> int:
     docs_index.add_argument("--docs-root", required=True)
     docs_index.add_argument("--docs-version", required=True)
     docs_index.add_argument("--repo-name", required=True)
+    docs_index.add_argument("--allow-prerelease", action="store_true")
     docs_index.set_defaults(func=cmd_write_docs_index)
 
     validate_docs = subcommands.add_parser("validate-docs")
@@ -181,8 +205,15 @@ def cmd_resolve_previous_url(args: argparse.Namespace) -> int:
 
 
 def cmd_run_bump_check(args: argparse.Namespace) -> int:
-    version = validate_release_version(args.version)
+    release_version = parse_release_version(args.version)
     mode = args.mode
+
+    if getattr(args, "dry_run", False):
+        write_text(
+            args.output_file,
+            f"roc bump check skipped for dry-run release {release_version.full}.\n",
+        )
+        return 0
 
     if mode == "off":
         write_text(args.output_file, "roc bump check skipped because bump_check is off.\n")
@@ -199,7 +230,7 @@ def cmd_run_bump_check(args: argparse.Namespace) -> int:
             "--old",
             args.previous_url,
             "--expect",
-            version,
+            release_version.base,
             args.entrypoint,
         ]
     )
@@ -211,7 +242,7 @@ def cmd_run_bump_check(args: argparse.Namespace) -> int:
     if result.returncode == 0:
         return 0
 
-    message = f"roc bump failed for expected version {version}."
+    message = f"roc bump failed for expected version {release_version.base}."
     if mode == "warn":
         print(f"warning: {message}", file=sys.stderr)
         print(output, file=sys.stderr)
@@ -318,6 +349,8 @@ def cmd_append_github_output(args: argparse.Namespace) -> int:
 
 def cmd_make_release_notes(args: argparse.Namespace) -> int:
     version = validate_release_version(args.version)
+    docs_url_input = getattr(args, "docs_url", "")
+    docs_url = require_single_line(docs_url_input, "docs URL") if docs_url_input else ""
     result = run(
         [
             "gh",
@@ -349,12 +382,16 @@ def cmd_make_release_notes(args: argparse.Namespace) -> int:
         if is_meaningful_bump_output(bump_text):
             body += "\n\n## Roc API Changes\n\n```text\n" + bump_text + "\n```"
 
+    if docs_url:
+        body += f"\n\n## Docs\n\n- [View docs for {version}]({docs_url})"
+
     write_text(args.output_file, body.rstrip() + "\n")
     return 0
 
 
 def cmd_publish_release(args: argparse.Namespace) -> int:
-    version = validate_release_version(args.version)
+    release_version = parse_release_version(args.version)
+    version = release_version.full
     repo = require_repo(args.repo)
     target = require_target(args.target)
     notes_file = require_nonempty_file(args.notes_file, "release notes file")
@@ -381,24 +418,24 @@ def cmd_publish_release(args: argparse.Namespace) -> int:
         ["git", "push", "origin", f"refs/tags/{version}"],
         f"could not push git tag {version!r}",
     )
-    run_required(
-        [
-            "gh",
-            "release",
-            "create",
-            version,
-            *[str(asset) for asset in assets],
-            "--repo",
-            repo,
-            "--target",
-            target,
-            "--title",
-            version,
-            "--notes-file",
-            str(notes_file),
-        ],
-        f"could not create GitHub release {version!r}",
-    )
+    create_release = [
+        "gh",
+        "release",
+        "create",
+        version,
+        *[str(asset) for asset in assets],
+        "--repo",
+        repo,
+        "--target",
+        target,
+        "--title",
+        version,
+        "--notes-file",
+        str(notes_file),
+    ]
+    if release_version.is_prerelease:
+        create_release.append("--prerelease")
+    run_required(create_release, f"could not create GitHub release {version!r}")
     return 0
 
 
@@ -410,7 +447,11 @@ def cmd_snapshot_docs(args: argparse.Namespace) -> int:
 
 
 def cmd_write_docs_index(args: argparse.Namespace) -> int:
-    docs_version = validate_release_version(args.docs_version)
+    release_version = parse_release_version(args.docs_version)
+    docs_version = release_version.full
+    if release_version.is_prerelease and not getattr(args, "allow_prerelease", False):
+        print(f"Skipping docs index update for prerelease docs version {docs_version}.")
+        return 0
     docs_root = Path(args.docs_root)
     repo_name = clean_repo_name(args.repo_name)
     target = f"/{repo_name}/{docs_version}/"
@@ -460,17 +501,38 @@ def cmd_validate_docs(args: argparse.Namespace) -> int:
 
 
 def validate_release_version(version: str) -> str:
+    return parse_release_version(version).full
+
+
+def release_base_version(version: str) -> str:
+    return parse_release_version(version).base
+
+
+def is_prerelease_version(version: str) -> bool:
+    return parse_release_version(version).is_prerelease
+
+
+def parse_release_version(version: str) -> ReleaseVersion:
     if not version:
         raise ReleaseError("release version is required")
-    match = SEMVER_RE.match(version)
+    match = RELEASE_VERSION_RE.match(version)
     if not match:
         raise ReleaseError(
-            f"release version must be strict X.Y.Z semver without a leading v: {version!r}"
+            "release version must be semver X.Y.Z with optional prerelease, "
+            f"without a leading v or build metadata: {version!r}"
         )
-    parts = tuple(int(part) for part in match.groups())
+    parts = (
+        int(match.group("major")),
+        int(match.group("minor")),
+        int(match.group("patch")),
+    )
     if parts == (0, 0, 0):
         raise ReleaseError("release version 0.0.0 is reserved and cannot be published")
-    return version
+    return ReleaseVersion(
+        full=version,
+        base=match.group("base"),
+        prerelease=match.group("prerelease") or "",
+    )
 
 
 def parse_test_os_json(value: str) -> list[str]:
@@ -574,8 +636,16 @@ def version_dirs(docs_root: Path) -> list[str]:
     return [
         child.name
         for child in docs_root.iterdir()
-        if child.is_dir() and SEMVER_RE.match(child.name) and child.name != "0.0.0"
+        if child.is_dir() and is_release_version_dir(child.name)
     ]
+
+
+def is_release_version_dir(name: str) -> bool:
+    try:
+        parse_release_version(name)
+        return True
+    except ReleaseError:
+        return False
 
 
 def clean_repo_name(repo_name: str) -> str:

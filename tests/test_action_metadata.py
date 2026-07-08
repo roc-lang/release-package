@@ -43,6 +43,31 @@ class ActionMetadataTest(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertIn(f"./actions/{action}", fixture)
 
+    def test_dry_run_action_inputs_are_documented(self):
+        validate = (ROOT / "actions" / "validate-release" / "action.yml").read_text(
+            encoding="utf-8"
+        )
+        bump = (ROOT / "actions" / "run-bump-check" / "action.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("dry_run:", validate)
+        self.assertIn("dry_run_version:", validate)
+        self.assertIn("is_dry_run:", validate)
+        self.assertIn("release_base_version:", validate)
+        self.assertIn("is_prerelease:", validate)
+        self.assertIn("dry_run:", bump)
+        self.assertIn("--dry-run", bump)
+
+    def test_prerelease_related_action_inputs_are_documented(self):
+        notes = (ROOT / "actions" / "make-release-notes" / "action.yml").read_text(
+            encoding="utf-8"
+        )
+        docs_index = (ROOT / "actions" / "docs-index" / "action.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("docs_url:", notes)
+        self.assertIn("update_prerelease_index:", docs_index)
+
 
 if __name__ == "__main__":
     unittest.main()

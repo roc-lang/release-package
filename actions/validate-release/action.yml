@@ -2,8 +2,14 @@ name: Validate Roc release
 description: Validate release versions and optionally check tag/release availability.
 inputs:
   release_version:
-    description: Strict semver release version, for example 1.2.3.
-    required: true
+    description: Strict semver release version, for example 1.2.3. Required unless dry_run is true.
+    default: ""
+  dry_run:
+    description: Use dry-run validation defaults for pull requests and other non-publish checks.
+    default: "false"
+  dry_run_version:
+    description: Synthetic strict semver used when dry_run is true and release_version is empty.
+    default: 999.999.999
   docs_version:
     description: Optional docs version. Empty means release_version.
     default: ""
@@ -23,6 +29,15 @@ outputs:
   docs_version:
     description: Validated docs version.
     value: ${{ steps.validate.outputs.docs_version }}
+  release_base_version:
+    description: Stable X.Y.Z base version used by roc bump.
+    value: ${{ steps.validate.outputs.release_base_version }}
+  is_dry_run:
+    description: Whether dry-run mode was used.
+    value: ${{ steps.validate.outputs.is_dry_run }}
+  is_prerelease:
+    description: Whether release_version has a prerelease suffix.
+    value: ${{ steps.validate.outputs.is_prerelease }}
 runs:
   using: composite
   steps:
@@ -30,6 +45,8 @@ runs:
       shell: bash
       env:
         RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
+        DRY_RUN: ${{ inputs.dry_run }}
+        DRY_RUN_VERSION: ${{ inputs.dry_run_version }}
         DOCS_VERSION_INPUT: ${{ inputs.docs_version }}
         CHECK_AVAILABILITY: ${{ inputs.check_availability }}
         REPO_INPUT: ${{ inputs.repo }}
@@ -37,7 +54,24 @@ runs:
       run: |
         set -euo pipefail
 
+        case "$DRY_RUN" in
+          true|false)
+            ;;
+          *)
+            echo "dry_run must be true or false." >&2
+            exit 2
+            ;;
+        esac
+
         release_version="$RELEASE_VERSION_INPUT"
+        if [[ -z "$release_version" && "$DRY_RUN" == true ]]; then
+          release_version="$DRY_RUN_VERSION"
+        fi
+        if [[ -z "$release_version" ]]; then
+          echo "release_version is required unless dry_run is true." >&2
+          exit 2
+        fi
+
         docs_version="$DOCS_VERSION_INPUT"
         if [[ -z "$docs_version" ]]; then
           docs_version="$release_version"
@@ -45,17 +79,24 @@ runs:
 
         python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" validate-version "$release_version"
         python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" validate-version "$docs_version"
+        release_base_version="${release_version%%-*}"
+        is_prerelease=false
+        if [[ "$release_version" == *-* ]]; then
+          is_prerelease=true
+        fi
 
         case "$CHECK_AVAILABILITY" in
           true)
-            if [[ -n "$GITHUB_TOKEN_INPUT" ]]; then
-              export GH_TOKEN="$GITHUB_TOKEN_INPUT"
+            if [[ "$DRY_RUN" == false ]]; then
+              if [[ -n "$GITHUB_TOKEN_INPUT" ]]; then
+                export GH_TOKEN="$GITHUB_TOKEN_INPUT"
+              fi
+              repo_args=()
+              if [[ -n "$REPO_INPUT" ]]; then
+                repo_args=(--repo "$REPO_INPUT")
+              fi
+              python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" check-availability "$release_version" "${repo_args[@]}"
             fi
-            repo_args=()
-            if [[ -n "$REPO_INPUT" ]]; then
-              repo_args=(--repo "$REPO_INPUT")
-            fi
-            python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" check-availability "$release_version" "${repo_args[@]}"
             ;;
           false)
             ;;
@@ -66,6 +107,8 @@ runs:
         esac
 
         echo "RELEASE_VERSION=$release_version" >> "$GITHUB_ENV"
+        echo "RELEASE_BASE_VERSION=$release_base_version" >> "$GITHUB_ENV"
+        echo "IS_PRERELEASE=$is_prerelease" >> "$GITHUB_ENV"
         echo "DOCS_VERSION=$docs_version" >> "$GITHUB_ENV"
         python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
           --github-output "$GITHUB_OUTPUT" \
@@ -75,3 +118,15 @@ runs:
           --github-output "$GITHUB_OUTPUT" \
           --name docs_version \
           --value "$docs_version"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name release_base_version \
+          --value "$release_base_version"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name is_dry_run \
+          --value "$DRY_RUN"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+          --github-output "$GITHUB_OUTPUT" \
+          --name is_prerelease \
+          --value "$is_prerelease"

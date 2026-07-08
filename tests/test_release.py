@@ -26,9 +26,23 @@ class ReleaseHelpersTest(unittest.TestCase):
     def test_validate_release_version_accepts_strict_semver(self):
         self.assertEqual(release.validate_release_version("1.2.3"), "1.2.3")
         self.assertEqual(release.validate_release_version("0.0.1"), "0.0.1")
+        self.assertEqual(release.validate_release_version("1.2.3-rc1"), "1.2.3-rc1")
+        self.assertEqual(release.validate_release_version("1.2.3-alpha.1"), "1.2.3-alpha.1")
+        self.assertEqual(release.release_base_version("1.2.3-rc1"), "1.2.3")
+        self.assertTrue(release.is_prerelease_version("1.2.3-rc1"))
+        self.assertFalse(release.is_prerelease_version("1.2.3"))
 
     def test_validate_release_version_rejects_invalid_versions(self):
-        for version in ["", "v1.2.3", "1.2", "1.2.3-rc1", "01.2.3", "0.0.0"]:
+        for version in [
+            "",
+            "v1.2.3",
+            "1.2",
+            "01.2.3",
+            "0.0.0",
+            "1.2.3-",
+            "1.2.3-01",
+            "1.2.3+build.1",
+        ]:
             with self.subTest(version=version):
                 with self.assertRaises(release.ReleaseError):
                     release.validate_release_version(version)
@@ -207,6 +221,29 @@ class ReleaseHelpersTest(unittest.TestCase):
         index = (self.tmp / "www" / "index.html").read_text(encoding="utf-8")
         self.assertIn("/roc-ansi/1.2.3/", index)
 
+    def test_write_docs_index_skips_prerelease_by_default(self):
+        release.cmd_write_docs_index(
+            namespace(
+                docs_root=str(self.tmp / "www"),
+                docs_version="1.2.3-rc1",
+                repo_name="roc-ansi",
+                allow_prerelease=False,
+            )
+        )
+        self.assertFalse((self.tmp / "www" / "index.html").exists())
+
+    def test_write_docs_index_can_update_prerelease_when_allowed(self):
+        release.cmd_write_docs_index(
+            namespace(
+                docs_root=str(self.tmp / "www"),
+                docs_version="1.2.3-rc1",
+                repo_name="roc-ansi",
+                allow_prerelease=True,
+            )
+        )
+        index = (self.tmp / "www" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("/roc-ansi/1.2.3-rc1/", index)
+
     def test_run_bump_check_warn_does_not_fail(self):
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
@@ -231,6 +268,68 @@ class ReleaseHelpersTest(unittest.TestCase):
             self.assertIn("bump failed", output.read_text(encoding="utf-8"))
         finally:
             os.environ["PATH"] = old_path
+
+    def test_run_bump_check_dry_run_does_not_call_roc(self):
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        roc = bin_dir / "roc"
+        roc.write_text("#!/usr/bin/env bash\necho should not run >&2\nexit 1\n", encoding="utf-8")
+        roc.chmod(0o755)
+        old_path = os.environ["PATH"]
+        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{old_path}"
+        try:
+            output = self.tmp / "bump.txt"
+            code = release.cmd_run_bump_check(
+                namespace(
+                    mode="require",
+                    version="999.999.999",
+                    entrypoint="main.roc",
+                    previous_url="https://example.com/pkg.tar.zst",
+                    output_file=str(output),
+                    dry_run=True,
+                )
+            )
+            self.assertEqual(code, 0)
+            self.assertIn("dry-run release 999.999.999", output.read_text(encoding="utf-8"))
+        finally:
+            os.environ["PATH"] = old_path
+
+    def test_run_bump_check_uses_base_version_for_prerelease(self):
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        log = self.tmp / "roc.log"
+        roc = bin_dir / "roc"
+        roc.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$*\" > \"$ROC_LOG\"\n",
+            encoding="utf-8",
+        )
+        roc.chmod(0o755)
+        old_path = os.environ["PATH"]
+        old_log = os.environ.get("ROC_LOG")
+        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{old_path}"
+        os.environ["ROC_LOG"] = str(log)
+        try:
+            output = self.tmp / "bump.txt"
+            code = release.cmd_run_bump_check(
+                namespace(
+                    mode="require",
+                    version="1.2.3-rc1",
+                    entrypoint="main.roc",
+                    previous_url="https://example.com/pkg.tar.zst",
+                    output_file=str(output),
+                    dry_run=False,
+                )
+            )
+            self.assertEqual(code, 0)
+            self.assertIn("--expect 1.2.3 main.roc", log.read_text(encoding="utf-8"))
+            self.assertNotIn("1.2.3-rc1", log.read_text(encoding="utf-8"))
+        finally:
+            os.environ["PATH"] = old_path
+            if old_log is None:
+                os.environ.pop("ROC_LOG", None)
+            else:
+                os.environ["ROC_LOG"] = old_log
 
     def test_resolve_previous_url_uses_single_latest_asset(self):
         bin_dir = self.tmp / "bin"
@@ -398,6 +497,37 @@ class ReleaseHelpersTest(unittest.TestCase):
         finally:
             os.environ["PATH"] = old_path
 
+    def test_make_release_notes_appends_docs_url(self):
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '{\"body\":\"Generated notes\"}'\n",
+            encoding="utf-8",
+        )
+        gh.chmod(0o755)
+        old_path = os.environ["PATH"]
+        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{old_path}"
+        try:
+            output = self.tmp / "notes.md"
+            release.cmd_make_release_notes(
+                namespace(
+                    repo="roc-lang/example",
+                    version="1.2.3-rc1",
+                    target="abc123",
+                    bump_output=str(self.tmp / "missing-bump.txt"),
+                    output_file=str(output),
+                    docs_url="https://roc-lang.github.io/example/1.2.3-rc1/",
+                )
+            )
+            notes = output.read_text(encoding="utf-8")
+            self.assertIn("Generated notes", notes)
+            self.assertIn("View docs for 1.2.3-rc1", notes)
+            self.assertIn("https://roc-lang.github.io/example/1.2.3-rc1/", notes)
+        finally:
+            os.environ["PATH"] = old_path
+
     def test_append_github_output_rejects_newline_values(self):
         output = self.tmp / "github-output.txt"
         with self.assertRaisesRegex(release.ReleaseError, "must not contain newlines"):
@@ -482,6 +612,59 @@ class ReleaseHelpersTest(unittest.TestCase):
             self.assertIn(str(bundle_dir / "pkg.tar.zst"), commands)
             self.assertNotIn("debug.txt", commands)
             self.assertIn("--notes-file", commands)
+        finally:
+            os.environ["PATH"] = old_path
+            if old_log is None:
+                os.environ.pop("LOG_PATH", None)
+            else:
+                os.environ["LOG_PATH"] = old_log
+
+    def test_publish_release_marks_prerelease(self):
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        log = self.tmp / "commands.log"
+        git = bin_dir / "git"
+        git.write_text(
+            "#!/usr/bin/env bash\n"
+            "echo \"git:$*\" >> \"$LOG_PATH\"\n",
+            encoding="utf-8",
+        )
+        gh = bin_dir / "gh"
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            "echo \"gh:$*\" >> \"$LOG_PATH\"\n",
+            encoding="utf-8",
+        )
+        git.chmod(0o755)
+        gh.chmod(0o755)
+        notes = self.write("release-notes.md", "Generated notes\n")
+        bundle_dir = self.tmp / "bundles"
+        bundle_dir.mkdir()
+        self.write("bundles/pkg.tar.zst", "bundle")
+        release_list = self.write(
+            "release-bundles.json",
+            json.dumps([{"name": "default", "artifact_file": "pkg.tar.zst"}]),
+        )
+        old_path = os.environ["PATH"]
+        old_log = os.environ.get("LOG_PATH")
+        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{old_path}"
+        os.environ["LOG_PATH"] = str(log)
+        try:
+            release.cmd_publish_release(
+                namespace(
+                    version="1.2.3-rc1",
+                    repo="roc-lang/example",
+                    target="abc123",
+                    notes_file=str(notes),
+                    bundle_dir=str(bundle_dir),
+                    release_list_file=str(release_list),
+                    skip_availability_check=True,
+                )
+            )
+            commands = log.read_text(encoding="utf-8")
+            self.assertIn("git:tag 1.2.3-rc1 abc123", commands)
+            self.assertIn("gh:release create 1.2.3-rc1", commands)
+            self.assertIn("--prerelease", commands)
         finally:
             os.environ["PATH"] = old_path
             if old_log is None:

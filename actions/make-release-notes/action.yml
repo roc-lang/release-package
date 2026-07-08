@@ -16,6 +16,9 @@ inputs:
   release_bundles_path:
     description: File containing release bundle metadata for custom notes commands.
     default: .release/release-bundles.json
+  docs_url:
+    description: Optional direct docs URL to include in generated notes and expose to custom notes commands.
+    default: ""
   repo:
     description: GitHub repository in owner/name form. Empty uses GITHUB_REPOSITORY.
     default: ""
@@ -40,6 +43,7 @@ runs:
         RELEASE_NOTES_FILE: ${{ inputs.release_notes_file }}
         BUMP_OUTPUT_FILE: ${{ inputs.bump_output_file }}
         RELEASE_BUNDLES_PATH: ${{ inputs.release_bundles_path }}
+        DOCS_URL: ${{ inputs.docs_url }}
         REPO_INPUT: ${{ inputs.repo }}
         TARGET_INPUT: ${{ inputs.target }}
         GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
@@ -63,6 +67,7 @@ runs:
           export RELEASE_NOTES_PATH="$RELEASE_NOTES_FILE"
           export RELEASE_VERSION="$release_version"
           export RELEASE_BUNDLES_PATH
+          export DOCS_URL
           bash "$GITHUB_ACTION_PATH/../../scripts/release/run-command.sh" RELEASE_NOTES_COMMAND
         else
           repo="$REPO_INPUT"
@@ -78,6 +83,7 @@ runs:
             --version "$release_version" \
             --target "$target" \
             --bump-output "$BUMP_OUTPUT_FILE" \
+            --docs-url "$DOCS_URL" \
             --output-file "$RELEASE_NOTES_FILE"
         fi
 

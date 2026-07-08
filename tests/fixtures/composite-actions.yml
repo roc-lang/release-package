@@ -19,8 +19,7 @@ jobs:
       - id: validate
         uses: ./actions/validate-release
         with:
-          release_version: "1.2.3"
-          check_availability: "false"
+          dry_run: "true"
 
       - id: previous
         uses: ./actions/resolve-previous-release
@@ -30,8 +29,8 @@ jobs:
       - uses: ./actions/run-bump-check
         with:
           release_version: ${{ steps.validate.outputs.release_version }}
-          bump_check: "off"
-          previous_url: ${{ steps.previous.outputs.previous_url }}
+          dry_run: "true"
+          bump_check: require
 
       - run: |
           mkdir -p dist
@@ -74,6 +73,7 @@ jobs:
       - run: |
           mkdir -p .release/bundles
           printf 'bundle' > .release/bundles/pkg.tar.zst
+          printf '[{"name":"default","artifact_file":"pkg.tar.zst","source_path":"dist/pkg.tar.zst"}]\n' > .release/release-bundles.json
 
       - uses: ./actions/make-release-notes
         with:

@@ -4,6 +4,9 @@ inputs:
   release_version:
     description: Strict semver release version. Empty uses RELEASE_VERSION env.
     default: ""
+  dry_run:
+    description: Skip roc bump while still writing a bump output file.
+    default: "false"
   bump_check:
     description: How to handle roc bump verification. One of warn, require, or off.
     default: require
@@ -30,6 +33,7 @@ runs:
       shell: bash
       env:
         RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
+        DRY_RUN: ${{ inputs.dry_run }}
         BUMP_CHECK: ${{ inputs.bump_check }}
         BUMP_ENTRYPOINT: ${{ inputs.bump_entrypoint }}
         PREVIOUS_URL_INPUT: ${{ inputs.previous_url }}
@@ -47,8 +51,21 @@ runs:
           exit 2
         fi
 
+        dry_run_args=()
+        case "$DRY_RUN" in
+          true)
+            dry_run_args=(--dry-run)
+            ;;
+          false)
+            ;;
+          *)
+            echo "dry_run must be true or false." >&2
+            exit 2
+            ;;
+        esac
+
         previous_url="$PREVIOUS_URL_INPUT"
-        if [[ -z "$previous_url" && -f "$PREVIOUS_URL_FILE" ]]; then
+        if [[ "$DRY_RUN" == false && -z "$previous_url" && -f "$PREVIOUS_URL_FILE" ]]; then
           previous_url="$(cat "$PREVIOUS_URL_FILE")"
         fi
 
@@ -57,7 +74,8 @@ runs:
           --version "$release_version" \
           --entrypoint "$BUMP_ENTRYPOINT" \
           --previous-url "$previous_url" \
-          --output-file "$OUTPUT_FILE"
+          --output-file "$OUTPUT_FILE" \
+          "${dry_run_args[@]}"
 
         python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
           --github-output "$GITHUB_OUTPUT" \

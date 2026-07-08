@@ -21,15 +21,21 @@ Caller repositories own their jobs and environments: Roc, Zig, Rust, Node, Nix,
 system packages, caches, services, runner labels, artifacts, and Pages deploys.
 There is no reusable workflow wrapper.
 
-## Actions
+Install Zig only if your repo builds a Zig platform or otherwise needs Zig
+during validation. Normal packages using prebuilt platform hosts do not need it.
+
+## Pinning
 
 Use actions directly from caller workflow steps:
 
 ```yaml
-- uses: roc-lang/release-package/actions/prepare-bundles@<sha>
+- uses: roc-lang/release-package/actions/prepare-bundles@<release-package-ref>
 ```
 
-Available actions:
+For release automation, prefer immutable refs: a release tag or a full commit
+SHA. Use `@main` only for experiments where a moving ref is acceptable.
+
+## Actions
 
 - `validate-release`: validates release/docs versions and optionally checks tag/release availability
 - `resolve-previous-release`: resolves an explicit or latest previous `.tar.zst` URL
@@ -42,6 +48,13 @@ Available actions:
 - `docs-index`: writes the docs root redirect/index
 - `docs-validate`: validates generated docs and preserved historical docs
 
+`validate-release` supports PR validation with `dry_run: true`. If no
+`release_version` is provided in dry-run mode, it uses `999.999.999`, skips
+availability checks, and outputs `is_dry_run: true`. It also outputs
+`release_base_version` and `is_prerelease`, so `1.2.3-rc1` can publish as
+`1.2.3-rc1` while release checks use `1.2.3`. `run-bump-check` writes a skipped
+bump output in dry-run mode without calling `roc`.
+
 Actions that call the GitHub API or `gh` accept `github_token`; pass
 `${{ github.token }}` or provide `GH_TOKEN`/`GITHUB_TOKEN` in the job environment.
 
@@ -50,12 +63,28 @@ as shell on the runner with the job environment. Treat them as trusted workflow
 code only. Do not derive these strings from pull request text, issue comments,
 release metadata, or untrusted workflow inputs.
 
-## Example Caller Workflow
+## Permissions
+
+| Workflow use | Permissions |
+| --- | --- |
+| Build or validate only | `contents: read` |
+| Availability checks, previous-release lookup, or default release notes | `contents: read` plus a GitHub token available to `gh` |
+| Publish GitHub release | `contents: write` |
+| Commit docs and deploy Pages | `contents: write`, `pages: write`, `id-token: write` |
+
+Prefer job-level permissions when only one job needs write access.
+
+## Minimal Package Release
+
+This template is for a Roc package using prebuilt platform hosts. It installs
+Roc only. It validates PRs with dry-run release settings and publishes only from
+manual `workflow_dispatch` runs.
 
 ```yaml
 name: Release
 
 on:
+  pull_request:
   workflow_dispatch:
     inputs:
       release_version:
@@ -63,9 +92,7 @@ on:
         required: true
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: release-${{ github.repository }}
@@ -73,7 +100,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     outputs:
       release_version: ${{ steps.validate.outputs.release_version }}
       docs_version: ${{ steps.validate.outputs.docs_version }}
@@ -83,30 +110,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: roc-lang/setup-roc@<sha>
+      - uses: roc-lang/setup-roc@<setup-roc-ref>
         with:
           version: nightly-new-compiler
 
-      - uses: mlugg/setup-zig@<sha>
-        with:
-          version: "0.16.0"
-
       - id: validate
-        uses: roc-lang/release-package/actions/validate-release@<sha>
+        uses: roc-lang/release-package/actions/validate-release@<release-package-ref>
         with:
-          release_version: ${{ inputs.release_version }}
+          release_version: ${{ github.event_name == 'workflow_dispatch' && inputs.release_version || '' }}
+          dry_run: ${{ github.event_name != 'workflow_dispatch' }}
           github_token: ${{ github.token }}
 
       - run: ./ci/all_tests.sh
 
       - id: previous
-        uses: roc-lang/release-package/actions/resolve-previous-release@<sha>
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: roc-lang/release-package/actions/resolve-previous-release@<release-package-ref>
         with:
           github_token: ${{ github.token }}
 
-      - uses: roc-lang/release-package/actions/run-bump-check@<sha>
+      - uses: roc-lang/release-package/actions/run-bump-check@<release-package-ref>
         with:
           release_version: ${{ steps.validate.outputs.release_version }}
+          dry_run: ${{ github.event_name != 'workflow_dispatch' }}
           previous_url: ${{ steps.previous.outputs.previous_url }}
           bump_check: require
           bump_entrypoint: main.roc
@@ -114,9 +140,10 @@ jobs:
       - run: ./scripts/bundle.sh --output-dir dist
 
       - id: bundles
-        uses: roc-lang/release-package/actions/prepare-bundles@<sha>
+        uses: roc-lang/release-package/actions/prepare-bundles@<release-package-ref>
         with:
           bundle_glob: dist/*.tar.zst
+          test_os_json: '["ubuntu-latest"]'
 
       - uses: actions/upload-artifact@v4
         with:
@@ -144,20 +171,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: roc-lang/setup-roc@<sha>
+      - uses: roc-lang/setup-roc@<setup-roc-ref>
         with:
           version: nightly-new-compiler
-
-      - uses: mlugg/setup-zig@<sha>
-        with:
-          version: "0.16.0"
 
       - uses: actions/download-artifact@v4
         with:
           name: release-bundles
           path: .release/test-bundles
 
-      - uses: roc-lang/release-package/actions/test-bundle@<sha>
+      - uses: roc-lang/release-package/actions/test-bundle@<release-package-ref>
         with:
           test_bundle_command: python3 ci/test_bundle_examples.py --bundle-path
           bundle_path: .release/test-bundles/${{ matrix.artifact_file }}
@@ -165,10 +188,13 @@ jobs:
           release_version: ${{ needs.build.outputs.release_version }}
 
   publish:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs:
       - build
       - test-bundles
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -184,39 +210,266 @@ jobs:
           name: release-metadata
           path: .release
 
-      - uses: roc-lang/release-package/actions/make-release-notes@<sha>
+      - uses: roc-lang/release-package/actions/make-release-notes@<release-package-ref>
         with:
           release_version: ${{ needs.build.outputs.release_version }}
+          docs_url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ needs.build.outputs.docs_version }}/
           github_token: ${{ github.token }}
 
-      - uses: roc-lang/release-package/actions/publish-release@<sha>
+      - uses: roc-lang/release-package/actions/publish-release@<release-package-ref>
         with:
           release_version: ${{ needs.build.outputs.release_version }}
           github_token: ${{ github.token }}
 ```
 
-Docs publishing is also caller-owned. A docs job can compose the docs helpers with
-the standard Pages actions:
+## Platform Release
+
+Platform repos often need Zig, Rust, C toolchains, system packages, caches, or
+host-build steps. Keep those setup choices in the caller workflow before the
+release-package actions.
 
 ```yaml
-- uses: roc-lang/release-package/actions/docs-snapshot@<sha>
-  with:
-    docs_root: www
-- run: roc docs package/main.roc --output="www/${{ needs.build.outputs.docs_version }}"
-- uses: roc-lang/release-package/actions/docs-index@<sha>
-  with:
-    docs_root: www
-    docs_version: ${{ needs.build.outputs.docs_version }}
-- uses: roc-lang/release-package/actions/docs-validate@<sha>
-  with:
-    docs_root: www
-    docs_version: ${{ needs.build.outputs.docs_version }}
-- uses: actions/configure-pages@v5
-- uses: actions/upload-pages-artifact@v3
-  with:
-    path: www
-- uses: actions/deploy-pages@v4
+name: Platform Release
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Release version, for example 0.3.0
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.validate.outputs.release_version }}
+      docs_version: ${{ steps.validate.outputs.docs_version }}
+      test_matrix: ${{ steps.bundles.outputs.test_matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: roc-lang/setup-roc@<setup-roc-ref>
+        with:
+          version: nightly-new-compiler
+
+      - uses: mlugg/setup-zig@<setup-zig-ref>
+        with:
+          version: "0.16.0"
+
+      - run: ./ci/setup_platform_build.sh
+
+      - id: validate
+        uses: roc-lang/release-package/actions/validate-release@<release-package-ref>
+        with:
+          release_version: ${{ github.event_name == 'workflow_dispatch' && inputs.release_version || '' }}
+          dry_run: ${{ github.event_name != 'workflow_dispatch' }}
+          github_token: ${{ github.token }}
+
+      - run: ./ci/all_tests.sh
+
+      - id: previous
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: roc-lang/release-package/actions/resolve-previous-release@<release-package-ref>
+        with:
+          github_token: ${{ github.token }}
+
+      - uses: roc-lang/release-package/actions/run-bump-check@<release-package-ref>
+        with:
+          release_version: ${{ steps.validate.outputs.release_version }}
+          dry_run: ${{ github.event_name != 'workflow_dispatch' }}
+          previous_url: ${{ steps.previous.outputs.previous_url }}
+          bump_check: require
+          bump_entrypoint: platform/main.roc
+
+      - run: ./ci/bundle_platform.sh --output-dir dist
+
+      - id: bundles
+        uses: roc-lang/release-package/actions/prepare-bundles@<release-package-ref>
+        with:
+          bundle_glob: dist/*.tar.zst
+          bundle_manifest_path: dist/release-bundles.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bundles
+          path: .release/bundles/*
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: |
+            .release/bump-output.txt
+            .release/previous-url.txt
+            .release/release-bundles.json
+            .release/test-matrix.json
+          if-no-files-found: error
+
+  test-bundles:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.build.outputs.test_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: roc-lang/setup-roc@<setup-roc-ref>
+        with:
+          version: nightly-new-compiler
+
+      - uses: mlugg/setup-zig@<setup-zig-ref>
+        with:
+          version: "0.16.0"
+
+      - run: ./ci/setup_platform_test.sh
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundles
+          path: .release/test-bundles
+
+      - uses: roc-lang/release-package/actions/test-bundle@<release-package-ref>
+        with:
+          test_bundle_command: bash ci/test_bundled_examples.sh
+          bundle_path: .release/test-bundles/${{ matrix.artifact_file }}
+          bundle_name: ${{ matrix.bundle_name }}
+          release_version: ${{ needs.build.outputs.release_version }}
+
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs:
+      - build
+      - test-bundles
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundles
+          path: .release/bundles
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-metadata
+          path: .release
+
+      - uses: roc-lang/release-package/actions/make-release-notes@<release-package-ref>
+        with:
+          release_version: ${{ needs.build.outputs.release_version }}
+          docs_url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ needs.build.outputs.docs_version }}/
+          github_token: ${{ github.token }}
+
+      - uses: roc-lang/release-package/actions/publish-release@<release-package-ref>
+        with:
+          release_version: ${{ needs.build.outputs.release_version }}
+          github_token: ${{ github.token }}
 ```
+
+## Docs Publishing
+
+Docs publishing is caller-owned. This job assumes a successful real release and
+commits generated docs before deploying GitHub Pages.
+
+```yaml
+docs:
+  if: ${{ github.event_name == 'workflow_dispatch' }}
+  needs:
+    - build
+    - publish
+  runs-on: ubuntu-latest
+  permissions:
+    contents: write
+    pages: write
+    id-token: write
+  environment:
+    name: github-pages
+    url: ${{ steps.deployment.outputs.page_url }}
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - uses: roc-lang/setup-roc@<setup-roc-ref>
+      with:
+        version: nightly-new-compiler
+
+    - uses: roc-lang/release-package/actions/docs-snapshot@<release-package-ref>
+      with:
+        docs_root: www
+
+    - run: |
+        rm -rf "www/${{ needs.build.outputs.docs_version }}"
+        roc docs package/main.roc --output="www/${{ needs.build.outputs.docs_version }}"
+
+    - uses: roc-lang/release-package/actions/docs-index@<release-package-ref>
+      with:
+        docs_root: www
+        docs_version: ${{ needs.build.outputs.docs_version }}
+
+    - uses: roc-lang/release-package/actions/docs-validate@<release-package-ref>
+      with:
+        docs_root: www
+        docs_version: ${{ needs.build.outputs.docs_version }}
+
+    - run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add www
+        if git diff --cached --quiet -- www; then
+          echo "Docs did not change."
+        else
+          git commit -m "Update docs for ${{ needs.build.outputs.release_version }}"
+          git push
+        fi
+
+    - uses: actions/configure-pages@v5
+
+    - uses: actions/upload-pages-artifact@v3
+      with:
+        path: www
+
+    - id: deployment
+      uses: actions/deploy-pages@v4
+```
+
+The minimal release template exposes `release_version` and `docs_version` from
+`build`, so docs jobs can depend on both `build` and `publish`: `publish` gates
+deployment on a completed release, while `build` provides the version outputs.
+
+## Artifact Conventions
+
+The `.release/*` paths are action defaults. Keep them unless your workflow has a
+reason to override the corresponding action inputs.
+
+The GitHub artifact names `release-bundles` and `release-metadata` are
+conventions used by these examples, not required API. If you rename them, update
+the matching upload and download steps together.
+
+`prepare-bundles` writes:
+
+- `.release/bundles/*`
+- `.release/test-matrix.json`
+- `.release/release-bundles.json`
+
+`publish-release` defaults to `.release/release-bundles.json` as its asset
+manifest and uploads only the listed `.tar.zst` files from `.release/bundles`.
+
+For release candidates such as `1.2.3-rc1`, `resolve-previous-release` still
+uses GitHub's latest stable release as the default previous bundle. Set
+`previous_release_url` explicitly for unusual backports or recovery workflows.
 
 ## Bundle Contract
 
@@ -256,9 +509,6 @@ For a multi-bundle release, write a manifest and set `bundle_manifest_path`:
 
 It also appends `bundle_path` as the final argument to `test_bundle_command`.
 
-`publish-release` uploads only `.tar.zst` files listed in
-`.release/release-bundles.json`, which is produced by `prepare-bundles`.
-
 ## Docs Contract
 
 Docs are versioned under `docs_root`:
@@ -267,6 +517,7 @@ Docs are versioned under `docs_root`:
 www/
   index.html
   1.2.0/
+  1.3.0-rc1/
   1.3.0/
 ```
 
@@ -275,13 +526,23 @@ published. `docs-validate` checks that `docs_root` exists, is non-empty, contain
 `$DOCS_VERSION/index.html`, and did not remove older version directories that
 existed before docs generation.
 
+Release-candidate docs can be published under their exact version directory,
+for example `www/1.3.0-rc1/`. By default, `docs-index` does not update the root
+redirect for prerelease docs; the redirect should move only when a stable release
+is published. Generated release notes can include a direct RC docs link with the
+`docs_url` input on `make-release-notes`.
+
 ## Release Safety
+
+The helpers accept stable release versions such as `1.2.3` and prerelease
+versions such as `1.2.3-rc1`. For prereleases, `roc bump --expect` receives the
+base version, for example `1.2.3`.
 
 The helpers reject release versions such as:
 
 - `v1.2.3`
 - `1.2`
-- `1.2.3-rc1`
+- `1.2.3+build.1`
 - `0.0.0`
 
 `validate-release` and `publish-release` can fail if the tag or GitHub release
@@ -291,4 +552,4 @@ To recover from a failed or bad publish:
 1. Delete the GitHub release.
 2. Delete the Git tag.
 3. Fix the source problem.
-4. Rerun the caller workflow with the same `X.Y.Z` version.
+4. Rerun the caller workflow with the same version.

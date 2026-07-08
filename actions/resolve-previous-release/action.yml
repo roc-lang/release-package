@@ -1,8 +1,8 @@
 name: Resolve previous Roc release
-description: Resolve the previous release bundle URL for roc bump.
+description: Resolve the previous stable release bundle URL for roc bump.
 inputs:
   previous_release_url:
-    description: Explicit previous release bundle URL. Empty means latest GitHub release asset.
+    description: Explicit previous release bundle URL. Empty means latest stable GitHub release asset.
     default: ""
   output_file:
     description: File where the resolved URL is written.
