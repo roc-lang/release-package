@@ -1,0 +1,48 @@
+name: Update Roc docs index
+description: Write a docs root redirect/index for the selected docs version.
+inputs:
+  docs_root:
+    description: Directory containing generated docs.
+    default: www
+  docs_version:
+    description: Docs version. Empty uses DOCS_VERSION or RELEASE_VERSION env.
+    default: ""
+  repo_name:
+    description: Repository name for Pages redirect paths. Empty uses GITHUB_REPOSITORY.
+    default: ""
+outputs:
+  index_file:
+    description: Docs root index file.
+    value: ${{ steps.index.outputs.index_file }}
+runs:
+  using: composite
+  steps:
+    - id: index
+      shell: bash
+      env:
+        DOCS_ROOT: ${{ inputs.docs_root }}
+        DOCS_VERSION_INPUT: ${{ inputs.docs_version }}
+        REPO_NAME_INPUT: ${{ inputs.repo_name }}
+      run: |
+        set -euo pipefail
+
+        docs_version="$DOCS_VERSION_INPUT"
+        if [[ -z "$docs_version" ]]; then
+          docs_version="${DOCS_VERSION:-${RELEASE_VERSION:-}}"
+        fi
+        if [[ -z "$docs_version" ]]; then
+          echo "docs_version input, DOCS_VERSION env, or RELEASE_VERSION env is required." >&2
+          exit 2
+        fi
+
+        repo_name="$REPO_NAME_INPUT"
+        if [[ -z "$repo_name" ]]; then
+          github_repository="${GITHUB_REPOSITORY:-}"
+          repo_name="${github_repository##*/}"
+        fi
+
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" write-docs-index \
+          --docs-root "$DOCS_ROOT" \
+          --docs-version "$docs_version" \
+          --repo-name "$repo_name"
+        echo "index_file=$DOCS_ROOT/index.html" >> "$GITHUB_OUTPUT"

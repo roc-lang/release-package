@@ -1,0 +1,71 @@
+name: Validate Roc release
+description: Validate release versions and optionally check tag/release availability.
+inputs:
+  release_version:
+    description: Strict semver release version, for example 1.2.3.
+    required: true
+  docs_version:
+    description: Optional docs version. Empty means release_version.
+    default: ""
+  check_availability:
+    description: Whether to fail if the tag or GitHub release already exists.
+    default: "true"
+  repo:
+    description: GitHub repository in owner/name form. Empty uses GITHUB_REPOSITORY.
+    default: ""
+  github_token:
+    description: Optional token for GitHub CLI calls. Empty uses existing GH_TOKEN/GITHUB_TOKEN env.
+    default: ""
+outputs:
+  release_version:
+    description: Validated release version.
+    value: ${{ steps.validate.outputs.release_version }}
+  docs_version:
+    description: Validated docs version.
+    value: ${{ steps.validate.outputs.docs_version }}
+runs:
+  using: composite
+  steps:
+    - id: validate
+      shell: bash
+      env:
+        RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
+        DOCS_VERSION_INPUT: ${{ inputs.docs_version }}
+        CHECK_AVAILABILITY: ${{ inputs.check_availability }}
+        REPO_INPUT: ${{ inputs.repo }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+
+        release_version="$RELEASE_VERSION_INPUT"
+        docs_version="$DOCS_VERSION_INPUT"
+        if [[ -z "$docs_version" ]]; then
+          docs_version="$release_version"
+        fi
+
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" validate-version "$release_version"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" validate-version "$docs_version"
+
+        case "$CHECK_AVAILABILITY" in
+          true)
+            if [[ -n "$GITHUB_TOKEN_INPUT" ]]; then
+              export GH_TOKEN="$GITHUB_TOKEN_INPUT"
+            fi
+            repo_args=()
+            if [[ -n "$REPO_INPUT" ]]; then
+              repo_args=(--repo "$REPO_INPUT")
+            fi
+            python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" check-availability "$release_version" "${repo_args[@]}"
+            ;;
+          false)
+            ;;
+          *)
+            echo "check_availability must be true or false." >&2
+            exit 2
+            ;;
+        esac
+
+        echo "RELEASE_VERSION=$release_version" >> "$GITHUB_ENV"
+        echo "DOCS_VERSION=$docs_version" >> "$GITHUB_ENV"
+        echo "release_version=$release_version" >> "$GITHUB_OUTPUT"
+        echo "docs_version=$docs_version" >> "$GITHUB_OUTPUT"

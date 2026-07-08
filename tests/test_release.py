@@ -343,6 +343,97 @@ class ReleaseHelpersTest(unittest.TestCase):
         finally:
             os.environ["PATH"] = old_path
 
+    def test_publish_release_rechecks_availability_and_creates_release(self):
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        log = self.tmp / "commands.log"
+        git = bin_dir / "git"
+        git.write_text(
+            "#!/usr/bin/env bash\n"
+            "case \"$1\" in\n"
+            "  rev-parse) exit 1 ;;\n"
+            "  ls-remote) exit 2 ;;\n"
+            "esac\n"
+            "echo \"git:$*\" >> \"$LOG_PATH\"\n",
+            encoding="utf-8",
+        )
+        gh = bin_dir / "gh"
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            "if [[ \"$1\" == \"api\" ]]; then echo 'Not Found' >&2; exit 1; fi\n"
+            "echo \"gh:$*\" >> \"$LOG_PATH\"\n",
+            encoding="utf-8",
+        )
+        git.chmod(0o755)
+        gh.chmod(0o755)
+        notes = self.write("release-notes.md", "Generated notes\n")
+        bundle_dir = self.tmp / "bundles"
+        bundle_dir.mkdir()
+        self.write("bundles/pkg.tar.zst", "bundle")
+        old_path = os.environ["PATH"]
+        old_log = os.environ.get("LOG_PATH")
+        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{old_path}"
+        os.environ["LOG_PATH"] = str(log)
+        try:
+            self.assertEqual(
+                release.cmd_publish_release(
+                    namespace(
+                        version="1.2.3",
+                        repo="roc-lang/example",
+                        target="abc123",
+                        notes_file=str(notes),
+                        bundle_dir=str(bundle_dir),
+                        skip_availability_check=False,
+                    )
+                ),
+                0,
+            )
+            commands = log.read_text(encoding="utf-8")
+            self.assertIn("git:tag 1.2.3 abc123", commands)
+            self.assertIn("git:push origin refs/tags/1.2.3", commands)
+            self.assertIn("gh:release create 1.2.3", commands)
+            self.assertIn(str(bundle_dir / "pkg.tar.zst"), commands)
+            self.assertIn("--notes-file", commands)
+        finally:
+            os.environ["PATH"] = old_path
+            if old_log is None:
+                os.environ.pop("LOG_PATH", None)
+            else:
+                os.environ["LOG_PATH"] = old_log
+
+    def test_publish_release_requires_nonempty_notes(self):
+        bundle_dir = self.tmp / "bundles"
+        bundle_dir.mkdir()
+        self.write("bundles/pkg.tar.zst", "bundle")
+        notes = self.write("release-notes.md", "")
+        with self.assertRaisesRegex(release.ReleaseError, "release notes file is empty"):
+            release.cmd_publish_release(
+                namespace(
+                    version="1.2.3",
+                    repo="roc-lang/example",
+                    target="abc123",
+                    notes_file=str(notes),
+                    bundle_dir=str(bundle_dir),
+                    skip_availability_check=True,
+                )
+            )
+
+    def test_publish_release_requires_assets(self):
+        notes = self.write("release-notes.md", "Generated notes\n")
+        bundle_dir = self.tmp / "bundles"
+        bundle_dir.mkdir()
+        with self.assertRaisesRegex(release.ReleaseError, "has no files"):
+            release.cmd_publish_release(
+                namespace(
+                    version="1.2.3",
+                    repo="roc-lang/example",
+                    target="abc123",
+                    notes_file=str(notes),
+                    bundle_dir=str(bundle_dir),
+                    skip_availability_check=True,
+                )
+            )
+
 
 def namespace(**kwargs):
     return type("Args", (), kwargs)()

@@ -1,0 +1,52 @@
+name: Resolve previous Roc release
+description: Resolve the previous release bundle URL for roc bump.
+inputs:
+  previous_release_url:
+    description: Explicit previous release bundle URL. Empty means latest GitHub release asset.
+    default: ""
+  output_file:
+    description: File where the resolved URL is written.
+    default: .release/previous-url.txt
+  repo:
+    description: GitHub repository in owner/name form. Empty uses GITHUB_REPOSITORY.
+    default: ""
+  github_token:
+    description: Optional token for GitHub CLI calls. Empty uses existing GH_TOKEN/GITHUB_TOKEN env.
+    default: ""
+outputs:
+  previous_url:
+    description: Resolved previous release bundle URL, or empty when none exists.
+    value: ${{ steps.resolve.outputs.previous_url }}
+  output_file:
+    description: File containing the resolved URL.
+    value: ${{ steps.resolve.outputs.output_file }}
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        PREVIOUS_RELEASE_URL: ${{ inputs.previous_release_url }}
+        OUTPUT_FILE: ${{ inputs.output_file }}
+        REPO_INPUT: ${{ inputs.repo }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+
+        if [[ -n "$GITHUB_TOKEN_INPUT" ]]; then
+          export GH_TOKEN="$GITHUB_TOKEN_INPUT"
+        fi
+
+        repo_args=()
+        if [[ -n "$REPO_INPUT" ]]; then
+          repo_args=(--repo "$REPO_INPUT")
+        fi
+
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" resolve-previous-url \
+          --provided-url "$PREVIOUS_RELEASE_URL" \
+          --output-file "$OUTPUT_FILE" \
+          "${repo_args[@]}"
+
+        previous_url="$(cat "$OUTPUT_FILE")"
+        echo "previous_url=$previous_url" >> "$GITHUB_OUTPUT"
+        echo "output_file=$OUTPUT_FILE" >> "$GITHUB_OUTPUT"

@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    name: Test release workflow tooling
+    name: Test release package tooling
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -23,6 +23,9 @@ jobs:
       - name: Check shell syntax
         run: bash -n scripts/release/run-command.sh
 
+      - name: Validate action metadata
+        run: python3 -m unittest tests.test_action_metadata
+
       - name: Install actionlint
         shell: bash
         run: |
@@ -31,4 +34,6 @@ jobs:
           echo "$PWD" >> "$GITHUB_PATH"
 
       - name: Lint workflows
-        run: actionlint
+        run: |
+          actionlint
+          actionlint tests/fixtures/composite-actions.yml

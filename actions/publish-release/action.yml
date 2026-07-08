@@ -1,0 +1,82 @@
+name: Publish Roc release
+description: Create the semver git tag and GitHub release from prepared bundles.
+inputs:
+  release_version:
+    description: Release version. Empty uses RELEASE_VERSION env.
+    default: ""
+  release_notes_file:
+    description: Release notes file.
+    default: .release/release-notes.md
+  bundle_dir:
+    description: Directory containing release bundle assets.
+    default: .release/bundles
+  repo:
+    description: GitHub repository in owner/name form. Empty uses GITHUB_REPOSITORY.
+    default: ""
+  target:
+    description: Target commit-ish for the tag and release. Empty uses GITHUB_SHA.
+    default: ""
+  check_availability:
+    description: Whether to re-check tag/release availability before publishing.
+    default: "true"
+  github_token:
+    description: Optional token for GitHub CLI calls. Empty uses existing GH_TOKEN/GITHUB_TOKEN env.
+    default: ""
+runs:
+  using: composite
+  steps:
+    - id: publish
+      shell: bash
+      env:
+        RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
+        RELEASE_NOTES_FILE: ${{ inputs.release_notes_file }}
+        BUNDLE_DIR: ${{ inputs.bundle_dir }}
+        REPO_INPUT: ${{ inputs.repo }}
+        TARGET_INPUT: ${{ inputs.target }}
+        CHECK_AVAILABILITY: ${{ inputs.check_availability }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+
+        release_version="$RELEASE_VERSION_INPUT"
+        if [[ -z "$release_version" ]]; then
+          release_version="${RELEASE_VERSION:-}"
+        fi
+        if [[ -z "$release_version" ]]; then
+          echo "release_version input or RELEASE_VERSION env is required." >&2
+          exit 2
+        fi
+
+        repo="$REPO_INPUT"
+        if [[ -z "$repo" ]]; then
+          repo="${GITHUB_REPOSITORY:-}"
+        fi
+        target="$TARGET_INPUT"
+        if [[ -z "$target" ]]; then
+          target="${GITHUB_SHA:-}"
+        fi
+
+        if [[ -n "$GITHUB_TOKEN_INPUT" ]]; then
+          export GH_TOKEN="$GITHUB_TOKEN_INPUT"
+        fi
+
+        publish_args=()
+        case "$CHECK_AVAILABILITY" in
+          true)
+            ;;
+          false)
+            publish_args=(--skip-availability-check)
+            ;;
+          *)
+            echo "check_availability must be true or false." >&2
+            exit 2
+            ;;
+        esac
+
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" publish-release \
+          --version "$release_version" \
+          --repo "$repo" \
+          --target "$target" \
+          --notes-file "$RELEASE_NOTES_FILE" \
+          --bundle-dir "$BUNDLE_DIR" \
+          "${publish_args[@]}"

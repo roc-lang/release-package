@@ -1,0 +1,88 @@
+name: Make Roc release notes
+description: Generate default GitHub release notes or run a caller-provided notes command.
+inputs:
+  release_version:
+    description: Release version. Empty uses RELEASE_VERSION env.
+    default: ""
+  release_notes_command:
+    description: Optional command that writes notes to release_notes_file.
+    default: ""
+  release_notes_file:
+    description: File where release notes are written.
+    default: .release/release-notes.md
+  bump_output_file:
+    description: File containing roc bump output.
+    default: .release/bump-output.txt
+  release_bundles_path:
+    description: File containing release bundle metadata for custom notes commands.
+    default: .release/release-bundles.json
+  repo:
+    description: GitHub repository in owner/name form. Empty uses GITHUB_REPOSITORY.
+    default: ""
+  target:
+    description: Target commit-ish for generated release notes. Empty uses GITHUB_SHA.
+    default: ""
+  github_token:
+    description: Optional token for GitHub CLI calls. Empty uses existing GH_TOKEN/GITHUB_TOKEN env.
+    default: ""
+outputs:
+  release_notes_file:
+    description: File containing release notes.
+    value: ${{ steps.notes.outputs.release_notes_file }}
+runs:
+  using: composite
+  steps:
+    - id: notes
+      shell: bash
+      env:
+        RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
+        RELEASE_NOTES_COMMAND: ${{ inputs.release_notes_command }}
+        RELEASE_NOTES_FILE: ${{ inputs.release_notes_file }}
+        BUMP_OUTPUT_FILE: ${{ inputs.bump_output_file }}
+        RELEASE_BUNDLES_PATH: ${{ inputs.release_bundles_path }}
+        REPO_INPUT: ${{ inputs.repo }}
+        TARGET_INPUT: ${{ inputs.target }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+
+        release_version="$RELEASE_VERSION_INPUT"
+        if [[ -z "$release_version" ]]; then
+          release_version="${RELEASE_VERSION:-}"
+        fi
+        if [[ -z "$release_version" ]]; then
+          echo "release_version input or RELEASE_VERSION env is required." >&2
+          exit 2
+        fi
+
+        if [[ -n "$GITHUB_TOKEN_INPUT" ]]; then
+          export GH_TOKEN="$GITHUB_TOKEN_INPUT"
+        fi
+
+        if [[ -n "$RELEASE_NOTES_COMMAND" ]]; then
+          export RELEASE_NOTES_PATH="$RELEASE_NOTES_FILE"
+          export RELEASE_VERSION="$release_version"
+          export RELEASE_BUNDLES_PATH
+          bash "$GITHUB_ACTION_PATH/../../scripts/release/run-command.sh" RELEASE_NOTES_COMMAND
+        else
+          repo="$REPO_INPUT"
+          if [[ -z "$repo" ]]; then
+            repo="${GITHUB_REPOSITORY:-}"
+          fi
+          target="$TARGET_INPUT"
+          if [[ -z "$target" ]]; then
+            target="${GITHUB_SHA:-}"
+          fi
+          python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" make-release-notes \
+            --repo "$repo" \
+            --version "$release_version" \
+            --target "$target" \
+            --bump-output "$BUMP_OUTPUT_FILE" \
+            --output-file "$RELEASE_NOTES_FILE"
+        fi
+
+        if [[ ! -s "$RELEASE_NOTES_FILE" ]]; then
+          echo "Release notes file is missing or empty: $RELEASE_NOTES_FILE" >&2
+          exit 1
+        fi
+        echo "release_notes_file=$RELEASE_NOTES_FILE" >> "$GITHUB_OUTPUT"

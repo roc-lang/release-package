@@ -73,6 +73,15 @@ def main() -> int:
     notes.add_argument("--output-file", required=True)
     notes.set_defaults(func=cmd_make_release_notes)
 
+    publish = subcommands.add_parser("publish-release")
+    publish.add_argument("--version", required=True)
+    publish.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
+    publish.add_argument("--target", default=os.environ.get("GITHUB_SHA", ""))
+    publish.add_argument("--notes-file", required=True)
+    publish.add_argument("--bundle-dir", required=True)
+    publish.add_argument("--skip-availability-check", action="store_true")
+    publish.set_defaults(func=cmd_publish_release)
+
     snapshot_docs = subcommands.add_parser("snapshot-docs")
     snapshot_docs.add_argument("--docs-root", required=True)
     snapshot_docs.add_argument("--snapshot-file", required=True)
@@ -320,6 +329,55 @@ def cmd_make_release_notes(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_publish_release(args: argparse.Namespace) -> int:
+    version = validate_release_version(args.version)
+    repo = require_repo(args.repo)
+    target = require_target(args.target)
+    notes_file = require_nonempty_file(args.notes_file, "release notes file")
+    assets = release_assets(args.bundle_dir)
+
+    if not args.skip_availability_check:
+        cmd_check_availability(namespace(version=version, repo=repo))
+
+    run_required(
+        ["git", "config", "user.name", "github-actions[bot]"],
+        "could not configure git user.name",
+    )
+    run_required(
+        [
+            "git",
+            "config",
+            "user.email",
+            "41898282+github-actions[bot]@users.noreply.github.com",
+        ],
+        "could not configure git user.email",
+    )
+    run_required(["git", "tag", version, target], f"could not create git tag {version!r}")
+    run_required(
+        ["git", "push", "origin", f"refs/tags/{version}"],
+        f"could not push git tag {version!r}",
+    )
+    run_required(
+        [
+            "gh",
+            "release",
+            "create",
+            version,
+            *[str(asset) for asset in assets],
+            "--repo",
+            repo,
+            "--target",
+            target,
+            "--title",
+            version,
+            "--notes-file",
+            str(notes_file),
+        ],
+        f"could not create GitHub release {version!r}",
+    )
+    return 0
+
+
 def cmd_snapshot_docs(args: argparse.Namespace) -> int:
     docs_root = Path(args.docs_root)
     versions = sorted(version_dirs(docs_root))
@@ -520,8 +578,46 @@ def require_repo(repo: str) -> str:
     return repo
 
 
+def require_target(target: str) -> str:
+    if not target or "\n" in target or "\r" in target:
+        raise ReleaseError("GITHUB_SHA or --target must be set to a commit-ish")
+    return target
+
+
+def require_nonempty_file(path_text: str | Path, description: str) -> Path:
+    path = Path(path_text)
+    if not path.is_file():
+        raise ReleaseError(f"{description} is missing: {path}")
+    if path.stat().st_size == 0:
+        raise ReleaseError(f"{description} is empty: {path}")
+    return path
+
+
+def release_assets(bundle_dir_text: str | Path) -> list[Path]:
+    bundle_dir = Path(bundle_dir_text)
+    if not bundle_dir.is_dir():
+        raise ReleaseError(f"release bundle directory is missing: {bundle_dir}")
+    assets = sorted(path for path in bundle_dir.iterdir() if path.is_file())
+    if not assets:
+        raise ReleaseError(f"release bundle directory has no files: {bundle_dir}")
+    for asset in assets:
+        if "\n" in asset.name or "\r" in asset.name:
+            raise ReleaseError(f"release asset filename contains a newline: {asset.name!r}")
+    return assets
+
+
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def run_required(command: list[str], message: str) -> None:
+    result = run(command)
+    if result.returncode != 0:
+        raise ReleaseError(f"{message}: {trim_output(result)}")
+
+
+def namespace(**kwargs: Any) -> object:
+    return type("Args", (), kwargs)()
 
 
 def is_github_not_found(result: subprocess.CompletedProcess[str]) -> bool:
