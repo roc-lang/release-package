@@ -17,9 +17,6 @@ outputs:
   previous_url:
     description: Resolved previous release bundle URL, or empty when none exists.
     value: ${{ steps.resolve.outputs.previous_url }}
-  output_file:
-    description: File containing the resolved URL.
-    value: ${{ steps.resolve.outputs.output_file }}
 runs:
   using: composite
   steps:
@@ -32,27 +29,11 @@ runs:
         GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
-
         if [[ -n "$GITHUB_TOKEN_INPUT" ]]; then
           export GH_TOKEN="$GITHUB_TOKEN_INPUT"
         fi
-
-        repo_args=()
-        if [[ -n "$REPO_INPUT" ]]; then
-          repo_args=(--repo "$REPO_INPUT")
-        fi
-
         python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" resolve-previous-url \
           --provided-url "$PREVIOUS_RELEASE_URL" \
+          --repo "$REPO_INPUT" \
           --output-file "$OUTPUT_FILE" \
-          "${repo_args[@]}"
-
-        previous_url="$(cat "$OUTPUT_FILE")"
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
-          --github-output "$GITHUB_OUTPUT" \
-          --name previous_url \
-          --value "$previous_url"
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
-          --github-output "$GITHUB_OUTPUT" \
-          --name output_file \
-          --value "$OUTPUT_FILE"
+          --github-output "$GITHUB_OUTPUT"

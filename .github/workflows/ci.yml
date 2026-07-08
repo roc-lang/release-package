@@ -20,11 +20,12 @@ jobs:
       - name: Run Python tests
         run: python3 -m unittest discover -s tests
 
-      - name: Check shell syntax
-        run: bash -n scripts/release/run-command.sh
-
-      - name: Validate action metadata
-        run: python3 -m unittest tests.test_action_metadata
+      - name: Shellcheck release scripts and composite actions
+        run: |
+          set -euo pipefail
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
+          shellcheck --shell=bash --severity=info scripts/release/run-command.sh
+          python3 scripts/lint_action_shell.py
 
       - name: Install actionlint
         shell: bash

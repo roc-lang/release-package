@@ -15,7 +15,7 @@ inputs:
     default: "false"
 outputs:
   index_file:
-    description: Docs root index file.
+    description: Docs root index file. Empty when the prerelease index update was skipped.
     value: ${{ steps.index.outputs.index_file }}
 runs:
   using: composite
@@ -29,41 +29,9 @@ runs:
         UPDATE_PRERELEASE_INDEX: ${{ inputs.update_prerelease_index }}
       run: |
         set -euo pipefail
-
-        docs_version="$DOCS_VERSION_INPUT"
-        if [[ -z "$docs_version" ]]; then
-          docs_version="${DOCS_VERSION:-${RELEASE_VERSION:-}}"
-        fi
-        if [[ -z "$docs_version" ]]; then
-          echo "docs_version input, DOCS_VERSION env, or RELEASE_VERSION env is required." >&2
-          exit 2
-        fi
-
-        repo_name="$REPO_NAME_INPUT"
-        if [[ -z "$repo_name" ]]; then
-          github_repository="${GITHUB_REPOSITORY:-}"
-          repo_name="${github_repository##*/}"
-        fi
-
-        prerelease_args=()
-        case "$UPDATE_PRERELEASE_INDEX" in
-          true)
-            prerelease_args=(--allow-prerelease)
-            ;;
-          false)
-            ;;
-          *)
-            echo "update_prerelease_index must be true or false." >&2
-            exit 2
-            ;;
-        esac
-
         python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" write-docs-index \
           --docs-root "$DOCS_ROOT" \
-          --docs-version "$docs_version" \
-          --repo-name "$repo_name" \
-          "${prerelease_args[@]}"
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
-          --github-output "$GITHUB_OUTPUT" \
-          --name index_file \
-          --value "$DOCS_ROOT/index.html"
+          --docs-version "$DOCS_VERSION_INPUT" \
+          --repo-name "$REPO_NAME_INPUT" \
+          --update-prerelease-index "$UPDATE_PRERELEASE_INDEX" \
+          --github-output "$GITHUB_OUTPUT"

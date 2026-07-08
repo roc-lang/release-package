@@ -49,11 +49,13 @@ SHA. Use `@main` only for experiments where a moving ref is acceptable.
 - `docs-validate`: validates generated docs and preserved historical docs
 
 `validate-release` supports PR validation with `dry_run: true`. If no
-`release_version` is provided in dry-run mode, it uses `999.999.999`, skips
-availability checks, and outputs `is_dry_run: true`. It also outputs
-`release_base_version` and `is_prerelease`, so `1.2.3-rc1` can publish as
-`1.2.3-rc1` while release checks use `1.2.3`. `run-bump-check` writes a skipped
-bump output in dry-run mode without calling `roc`.
+`release_version` is provided in dry-run mode, it uses `999.999.999` and skips
+availability checks for that synthetic version; when a real `release_version`
+is provided, availability is still checked even in dry-run mode so duplicate
+versions fail before merge. It outputs `is_dry_run`, `release_base_version`,
+and `is_prerelease`, so `1.2.3-rc1` can publish as `1.2.3-rc1` while release
+checks use `1.2.3`. `run-bump-check` writes a skipped bump output in dry-run
+mode without calling `roc`.
 
 Actions that call the GitHub API or `gh` accept `github_token`; pass
 `${{ github.token }}` or provide `GH_TOKEN`/`GITHUB_TOKEN` in the job environment.
@@ -68,7 +70,8 @@ release metadata, or untrusted workflow inputs.
 | Workflow use | Permissions |
 | --- | --- |
 | Build or validate only | `contents: read` |
-| Availability checks, previous-release lookup, or default release notes | `contents: read` plus a GitHub token available to `gh` |
+| Availability checks or previous-release lookup | `contents: read` plus a GitHub token available to `gh` |
+| Default release notes (`make-release-notes` without a custom command) | `contents: write` (the `generate-notes` API requires write access) |
 | Publish GitHub release | `contents: write` |
 | Commit docs and deploy Pages | `contents: write`, `pages: write`, `id-token: write` |
 
@@ -94,9 +97,11 @@ on:
 permissions:
   contents: read
 
+# Serialize release runs in one group; PR validation runs get per-ref groups
+# so they never cancel a queued release run.
 concurrency:
-  group: release-${{ github.repository }}
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'workflow_dispatch' && format('release-{0}', github.repository) || format('release-validate-{0}-{1}', github.repository, github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   build:
@@ -107,8 +112,6 @@ jobs:
       test_matrix: ${{ steps.bundles.outputs.test_matrix }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: roc-lang/setup-roc@<setup-roc-ref>
         with:
@@ -197,8 +200,6 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
@@ -213,7 +214,6 @@ jobs:
       - uses: roc-lang/release-package/actions/make-release-notes@<release-package-ref>
         with:
           release_version: ${{ needs.build.outputs.release_version }}
-          docs_url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ needs.build.outputs.docs_version }}/
           github_token: ${{ github.token }}
 
       - uses: roc-lang/release-package/actions/publish-release@<release-package-ref>
@@ -242,6 +242,12 @@ on:
 permissions:
   contents: read
 
+# Serialize release runs in one group; PR validation runs get per-ref groups
+# so they never cancel a queued release run.
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && format('release-{0}', github.repository) || format('release-validate-{0}-{1}', github.repository, github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -251,8 +257,6 @@ jobs:
       test_matrix: ${{ steps.bundles.outputs.test_matrix }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: roc-lang/setup-roc@<setup-roc-ref>
         with:
@@ -353,8 +357,6 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
@@ -369,7 +371,6 @@ jobs:
       - uses: roc-lang/release-package/actions/make-release-notes@<release-package-ref>
         with:
           release_version: ${{ needs.build.outputs.release_version }}
-          docs_url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ needs.build.outputs.docs_version }}/
           github_token: ${{ github.token }}
 
       - uses: roc-lang/release-package/actions/publish-release@<release-package-ref>
@@ -399,8 +400,6 @@ docs:
     url: ${{ steps.deployment.outputs.page_url }}
   steps:
     - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
 
     - uses: roc-lang/setup-roc@<setup-roc-ref>
       with:
@@ -449,6 +448,12 @@ The minimal release template exposes `release_version` and `docs_version` from
 `build`, so docs jobs can depend on both `build` and `publish`: `publish` gates
 deployment on a completed release, while `build` provides the version outputs.
 
+When your workflow publishes docs, also pass `docs_url` to `make-release-notes`
+so the generated notes link to them, for example
+`docs_url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ needs.build.outputs.docs_version }}/`.
+Leave `docs_url` unset in workflows without a docs job so release notes do not
+link to pages that were never published.
+
 ## Artifact Conventions
 
 The `.release/*` paths are action defaults. Keep them unless your workflow has a
@@ -471,15 +476,22 @@ For release candidates such as `1.2.3-rc1`, `resolve-previous-release` still
 uses GitHub's latest stable release as the default previous bundle. Set
 `previous_release_url` explicitly for unusual backports or recovery workflows.
 
+With `bump_check: require`, `run-bump-check` fails when no previous release
+bundle URL was resolved, so a wiring mistake cannot silently skip the check.
+For a repository's first release (no previous release exists yet), use
+`bump_check: warn` or `off` for that run.
+
 ## Bundle Contract
 
 `prepare-bundles` expects one or more `.tar.zst` files matched by `bundle_glob`.
 It fails if the glob matches nothing, paths escape the workspace, filenames
-collide, or any bundle has no test runner.
+collide, a matched file is not a `.tar.zst`, a filename contains `#`, or any
+bundle has no test runner.
 
 Generated files are written under the workspace. `bundle_dir` must not be `/`,
 `$HOME`, the workspace root, or a directory containing the source bundles matched
-by `bundle_glob`.
+by `bundle_glob`. `prepare-bundles` marks the `bundle_dir` it creates and refuses
+to delete an existing non-empty directory it did not create.
 
 For a simple release, every matched bundle is tested on every runner in
 `test_os_json`.
@@ -504,10 +516,13 @@ For a multi-bundle release, write a manifest and set `bundle_manifest_path`:
 `test-bundle` exposes:
 
 - `BUNDLE_NAME`
-- `BUNDLE_PATH`
+- `BUNDLE_PATH` (absolute, so test scripts may change directory)
 - `RELEASE_VERSION`
 
-It also appends `bundle_path` as the final argument to `test_bundle_command`.
+It also appends the absolute bundle path as the final argument to
+`test_bundle_command`. Trailing whitespace in the command is trimmed, so YAML
+block scalars work; a command whose last line ends in a `#` comment is
+rejected because the comment would swallow the appended argument.
 
 ## Docs Contract
 

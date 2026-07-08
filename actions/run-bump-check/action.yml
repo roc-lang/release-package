@@ -22,10 +22,6 @@ inputs:
   output_file:
     description: File where roc bump output is written.
     default: .release/bump-output.txt
-outputs:
-  output_file:
-    description: File containing roc bump output.
-    value: ${{ steps.bump.outputs.output_file }}
 runs:
   using: composite
   steps:
@@ -41,43 +37,14 @@ runs:
         OUTPUT_FILE: ${{ inputs.output_file }}
       run: |
         set -euo pipefail
-
-        release_version="$RELEASE_VERSION_INPUT"
-        if [[ -z "$release_version" ]]; then
-          release_version="${RELEASE_VERSION:-}"
-        fi
-        if [[ -z "$release_version" ]]; then
-          echo "release_version input or RELEASE_VERSION env is required." >&2
-          exit 2
-        fi
-
-        dry_run_args=()
-        case "$DRY_RUN" in
-          true)
-            dry_run_args=(--dry-run)
-            ;;
-          false)
-            ;;
-          *)
-            echo "dry_run must be true or false." >&2
-            exit 2
-            ;;
-        esac
-
         previous_url="$PREVIOUS_URL_INPUT"
-        if [[ "$DRY_RUN" == false && -z "$previous_url" && -f "$PREVIOUS_URL_FILE" ]]; then
+        if [[ "$DRY_RUN" == "false" && -z "$previous_url" && -f "$PREVIOUS_URL_FILE" ]]; then
           previous_url="$(cat "$PREVIOUS_URL_FILE")"
         fi
-
         python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" run-bump-check \
           --mode "$BUMP_CHECK" \
-          --version "$release_version" \
+          --version "$RELEASE_VERSION_INPUT" \
           --entrypoint "$BUMP_ENTRYPOINT" \
           --previous-url "$previous_url" \
           --output-file "$OUTPUT_FILE" \
-          "${dry_run_args[@]}"
-
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
-          --github-output "$GITHUB_OUTPUT" \
-          --name output_file \
-          --value "$OUTPUT_FILE"
+          --dry-run "$DRY_RUN"

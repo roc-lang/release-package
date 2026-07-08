@@ -53,80 +53,15 @@ runs:
         GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
-
-        case "$DRY_RUN" in
-          true|false)
-            ;;
-          *)
-            echo "dry_run must be true or false." >&2
-            exit 2
-            ;;
-        esac
-
-        release_version="$RELEASE_VERSION_INPUT"
-        if [[ -z "$release_version" && "$DRY_RUN" == true ]]; then
-          release_version="$DRY_RUN_VERSION"
+        if [[ -n "$GITHUB_TOKEN_INPUT" ]]; then
+          export GH_TOKEN="$GITHUB_TOKEN_INPUT"
         fi
-        if [[ -z "$release_version" ]]; then
-          echo "release_version is required unless dry_run is true." >&2
-          exit 2
-        fi
-
-        docs_version="$DOCS_VERSION_INPUT"
-        if [[ -z "$docs_version" ]]; then
-          docs_version="$release_version"
-        fi
-
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" validate-version "$release_version"
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" validate-version "$docs_version"
-        release_base_version="${release_version%%-*}"
-        is_prerelease=false
-        if [[ "$release_version" == *-* ]]; then
-          is_prerelease=true
-        fi
-
-        case "$CHECK_AVAILABILITY" in
-          true)
-            if [[ "$DRY_RUN" == false ]]; then
-              if [[ -n "$GITHUB_TOKEN_INPUT" ]]; then
-                export GH_TOKEN="$GITHUB_TOKEN_INPUT"
-              fi
-              repo_args=()
-              if [[ -n "$REPO_INPUT" ]]; then
-                repo_args=(--repo "$REPO_INPUT")
-              fi
-              python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" check-availability "$release_version" "${repo_args[@]}"
-            fi
-            ;;
-          false)
-            ;;
-          *)
-            echo "check_availability must be true or false." >&2
-            exit 2
-            ;;
-        esac
-
-        echo "RELEASE_VERSION=$release_version" >> "$GITHUB_ENV"
-        echo "RELEASE_BASE_VERSION=$release_base_version" >> "$GITHUB_ENV"
-        echo "IS_PRERELEASE=$is_prerelease" >> "$GITHUB_ENV"
-        echo "DOCS_VERSION=$docs_version" >> "$GITHUB_ENV"
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" validate-release \
+          --release-version "$RELEASE_VERSION_INPUT" \
+          --dry-run "$DRY_RUN" \
+          --dry-run-version "$DRY_RUN_VERSION" \
+          --docs-version "$DOCS_VERSION_INPUT" \
+          --check-availability "$CHECK_AVAILABILITY" \
+          --repo "$REPO_INPUT" \
           --github-output "$GITHUB_OUTPUT" \
-          --name release_version \
-          --value "$release_version"
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
-          --github-output "$GITHUB_OUTPUT" \
-          --name docs_version \
-          --value "$docs_version"
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
-          --github-output "$GITHUB_OUTPUT" \
-          --name release_base_version \
-          --value "$release_base_version"
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
-          --github-output "$GITHUB_OUTPUT" \
-          --name is_dry_run \
-          --value "$DRY_RUN"
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
-          --github-output "$GITHUB_OUTPUT" \
-          --name is_prerelease \
-          --value "$is_prerelease"
+          --github-env "$GITHUB_ENV"

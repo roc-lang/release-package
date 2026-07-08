@@ -21,17 +21,7 @@ runs:
         SNAPSHOT_FILE: ${{ inputs.snapshot_file }}
       run: |
         set -euo pipefail
-
-        docs_version="$DOCS_VERSION_INPUT"
-        if [[ -z "$docs_version" ]]; then
-          docs_version="${DOCS_VERSION:-${RELEASE_VERSION:-}}"
-        fi
-        if [[ -z "$docs_version" ]]; then
-          echo "docs_version input, DOCS_VERSION env, or RELEASE_VERSION env is required." >&2
-          exit 2
-        fi
-
         python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" validate-docs \
           --docs-root "$DOCS_ROOT" \
-          --docs-version "$docs_version" \
+          --docs-version "$DOCS_VERSION_INPUT" \
           --snapshot-file "$SNAPSHOT_FILE"

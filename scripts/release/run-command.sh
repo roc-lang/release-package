@@ -20,13 +20,28 @@ env_name="$1"
 shift
 
 command="${!env_name:-}"
-if [[ -z "$command" ]]; then
-  echo "Skipping empty command hook: $env_name"
-  exit 0
+if [[ -z "${command//[$' \t\r\n']/}" ]]; then
+  echo "error: $env_name must contain a command." >&2
+  exit 2
+fi
+
+if [[ "$append_args" == true ]]; then
+  # Trim trailing whitespace so commands from YAML block scalars (which end
+  # with a newline) keep the appended arguments on the same command line.
+  while [[ "$command" == *$'\n' || "$command" == *$'\r' || "$command" == *' ' || "$command" == *$'\t' ]]; do
+    command="${command%?}"
+  done
+  last_line="${command##*$'\n'}"
+  if [[ "$last_line" == '#'* || "$last_line" == *' #'* || "$last_line" == *$'\t#'* ]]; then
+    echo "error: $env_name ends with a '#' comment, which would swallow the appended arguments." >&2
+    exit 2
+  fi
 fi
 
 tmp_dir="${RUNNER_TEMP:-/tmp}"
-command_file="$(mktemp "$tmp_dir/release-command.XXXXXX.sh")"
+# Keep the XXXXXX template at the end: BSD mktemp does not substitute
+# non-trailing X's and would create a fixed, predictable filename.
+command_file="$(mktemp "$tmp_dir/release-command.XXXXXX")"
 cleanup() {
   rm -f "$command_file"
 }

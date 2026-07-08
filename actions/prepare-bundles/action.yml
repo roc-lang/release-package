@@ -29,15 +29,6 @@ outputs:
   release_bundles:
     description: Compact JSON list of release bundle assets.
     value: ${{ steps.prepare.outputs.release_bundles }}
-  bundle_dir:
-    description: Directory containing copied release bundles.
-    value: ${{ steps.prepare.outputs.bundle_dir }}
-  matrix_file:
-    description: File containing pretty-printed matrix JSON.
-    value: ${{ steps.prepare.outputs.matrix_file }}
-  release_list_file:
-    description: File containing pretty-printed release bundle JSON.
-    value: ${{ steps.prepare.outputs.release_list_file }}
 runs:
   using: composite
   steps:
@@ -53,31 +44,12 @@ runs:
         RELEASE_LIST_FILE: ${{ inputs.release_list_file }}
       run: |
         set -euo pipefail
-
-        workspace="$WORKSPACE_INPUT"
-        if [[ -z "$workspace" ]]; then
-          workspace="${GITHUB_WORKSPACE:-$PWD}"
-        fi
-
         python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" prepare-bundles \
           --bundle-glob "$BUNDLE_GLOB" \
           --bundle-manifest-path "$BUNDLE_MANIFEST_PATH" \
           --test-os-json "$TEST_OS_JSON" \
-          --workspace "$workspace" \
+          --workspace "$WORKSPACE_INPUT" \
           --bundle-dir "$BUNDLE_DIR" \
           --matrix-file "$MATRIX_FILE" \
           --release-list-file "$RELEASE_LIST_FILE" \
           --github-output "$GITHUB_OUTPUT"
-
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
-          --github-output "$GITHUB_OUTPUT" \
-          --name bundle_dir \
-          --value "$BUNDLE_DIR"
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
-          --github-output "$GITHUB_OUTPUT" \
-          --name matrix_file \
-          --value "$MATRIX_FILE"
-        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" append-github-output \
-          --github-output "$GITHUB_OUTPUT" \
-          --name release_list_file \
-          --value "$RELEASE_LIST_FILE"

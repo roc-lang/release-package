@@ -2,7 +2,7 @@ name: Test Roc release bundle
 description: Run a caller-provided test command against one release bundle.
 inputs:
   test_bundle_command:
-    description: Command prefix that receives the bundle path as its final argument.
+    description: Command prefix that receives the absolute bundle path as its final argument.
     required: true
   bundle_path:
     description: Path to the downloaded bundle artifact.
@@ -30,6 +30,9 @@ runs:
         if [[ ! -f "$bundle_path" ]]; then
           echo "Bundle artifact is missing: $bundle_path" >&2
           exit 1
+        fi
+        if [[ "$bundle_path" != /* ]]; then
+          bundle_path="$PWD/$bundle_path"
         fi
 
         release_version="$RELEASE_VERSION_INPUT"
