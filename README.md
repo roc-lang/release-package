@@ -16,6 +16,7 @@ Composite GitHub Actions for Roc package and platform releases.
 - release notes generation
 - semver tag and GitHub release creation
 - versioned docs safety checks
+- release follow-up PR mechanics
 
 Caller repositories own their jobs and environments: Roc, Zig, Rust, Node, Nix,
 system packages, caches, services, runner labels, artifacts, and Pages deploys.
@@ -47,6 +48,7 @@ SHA. Use `@main` only for experiments where a moving ref is acceptable.
 - `docs-snapshot`: snapshots existing docs versions before generation
 - `docs-index`: writes the docs root redirect/index
 - `docs-validate`: validates generated docs and preserved historical docs
+- `create-followup-pr`: commits generated follow-up changes to a branch and opens or updates a PR
 
 `validate-release` supports PR validation with `dry_run: true`. If no
 `release_version` is provided in dry-run mode, it uses `999.999.999` and skips
@@ -74,9 +76,16 @@ release metadata, or untrusted workflow inputs.
 | Availability checks or previous-release lookup | `contents: read` plus a GitHub token available to `gh` |
 | Default release notes (`make-release-notes` without a custom command) | `contents: write` (the `generate-notes` API requires write access) |
 | Publish GitHub release | `contents: write` |
-| Commit docs and deploy Pages | `contents: write`, `pages: write`, `id-token: write` |
+| Open release follow-up PR | `contents: write`, `pull-requests: write` |
+| Deploy Pages | `pages: write`, `id-token: write` |
 
 Prefer job-level permissions when only one job needs write access.
+
+For workflows that use `create-followup-pr` with `${{ github.token }}`, the
+caller repo must also allow Actions to create pull requests. In GitHub, enable
+Settings -> Actions -> General -> Workflow permissions -> "Allow GitHub Actions
+to create and approve pull requests". Without this repo-level setting, GitHub
+can reject PR creation even when the job has `pull-requests: write`.
 
 ## Minimal Package Release
 
@@ -382,8 +391,11 @@ jobs:
 
 ## Docs Publishing
 
-Docs publishing is caller-owned. This job assumes a successful real release and
-commits generated docs before deploying GitHub Pages.
+Docs publishing is caller-owned. This job assumes a successful real release,
+generates and validates docs, then opens a follow-up PR instead of pushing
+directly to the base branch. Package repos still decide how docs are generated,
+how example URLs are rewritten, which examples are skipped, and when Pages
+deploys.
 
 ```yaml
 docs:
@@ -394,11 +406,7 @@ docs:
   runs-on: ubuntu-latest
   permissions:
     contents: write
-    pages: write
-    id-token: write
-  environment:
-    name: github-pages
-    url: ${{ steps.deployment.outputs.page_url }}
+    pull-requests: write
   steps:
     - uses: actions/checkout@v4
 
@@ -424,25 +432,15 @@ docs:
         docs_root: www
         docs_version: ${{ needs.build.outputs.docs_version }}
 
-    - run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        git add www
-        if git diff --cached --quiet -- www; then
-          echo "Docs did not change."
-        else
-          git commit -m "Update docs for ${{ needs.build.outputs.release_version }}"
-          git push
-        fi
-
-    - uses: actions/configure-pages@v5
-
-    - uses: actions/upload-pages-artifact@v3
+    - uses: roc-lang/release-package/actions/create-followup-pr@<release-package-ref>
       with:
-        path: www
-
-    - id: deployment
-      uses: actions/deploy-pages@v4
+        release_version: ${{ needs.build.outputs.release_version }}
+        paths: www
+        branch_prefix: release-followup
+        base_branch: main
+        commit_message: Update docs for ${{ needs.build.outputs.release_version }}
+        pr_title: Update docs for ${{ needs.build.outputs.release_version }}
+        github_token: ${{ github.token }}
 ```
 
 The minimal release template exposes `release_version` and `docs_version` from
@@ -466,6 +464,51 @@ In the `publish` job, the release-notes step then looks like:
         github_token: ${{ github.token }}
         docs_url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ needs.build.outputs.docs_version }}/
 ```
+
+## Follow-Up PRs
+
+Use `create-followup-pr` after the caller repo has generated and validated
+release follow-up content. The action owns the GitHub mechanics: it stages the
+configured paths, skips clean runs, commits with the GitHub Actions bot identity,
+pushes a deterministic branch, and opens or updates the matching PR. It does not
+push directly to the base branch.
+
+```yaml
+- name: Open release follow-up PR
+  uses: roc-lang/release-package/actions/create-followup-pr@<release-package-ref>
+  with:
+    release_version: ${{ needs.build.outputs.release_version }}
+    paths: |
+      examples
+      www
+    branch_prefix: release-followup
+    base_branch: main
+    commit_message: Update docs and examples for ${{ needs.build.outputs.release_version }}
+    pr_title: Update docs and examples for ${{ needs.build.outputs.release_version }}
+    labels: release, docs
+    github_token: ${{ github.token }}
+```
+
+The branch is `${branch_prefix}/${release_version}`, for example
+`release-followup/1.2.3`. Reruns for the same version update that branch with
+`--force-with-lease` and update the existing open PR when one exists.
+
+If the action fails with `GitHub Actions is not permitted to create or approve
+pull requests`, enable the caller repo setting that allows Actions to create
+pull requests. The equivalent `gh` command is:
+
+```bash
+gh api \
+  --method PUT \
+  repos/OWNER/REPO/actions/permissions/workflow \
+  -f default_workflow_permissions=read \
+  -F can_approve_pull_request_reviews=true
+```
+
+Keep repo-specific content generation in the package repo: deriving release
+bundle URLs, rewriting example URLs, generating docs, deciding skipped examples,
+validating generated content, and deciding whether Pages deploys immediately or
+from the base branch.
 
 ## Release Candidates
 

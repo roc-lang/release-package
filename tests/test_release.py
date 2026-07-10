@@ -647,6 +647,134 @@ class ReleaseHelpersTest(unittest.TestCase):
                 with self.assertRaisesRegex(release.ReleaseError, "invalid GitHub output name"):
                     release.append_github_output(str(output), name, "ok")
 
+    # --- create-followup-pr ---
+
+    def followup_args(
+        self,
+        version="1.2.3",
+        paths="examples\nwww",
+        branch_prefix="release-followup",
+        base_branch="main",
+        commit_message="Update docs and examples",
+        pr_title="Update docs and examples",
+        pr_body="",
+        labels="",
+        output=None,
+    ):
+        return parse_args(
+            "create-followup-pr",
+            "--release-version", version,
+            "--paths", paths,
+            "--branch-prefix", branch_prefix,
+            "--base-branch", base_branch,
+            "--commit-message", commit_message,
+            "--pr-title", pr_title,
+            "--pr-body", pr_body,
+            "--labels", labels,
+            "--repo", "roc-lang/example",
+            "--github-output", str(output or (self.tmp / "followup-output.txt")),
+        )
+
+    def test_create_followup_pr_skips_when_paths_did_not_change(self):
+        log = self.tmp / "commands.log"
+        output = self.tmp / "followup-output.txt"
+        git = (
+            'echo "git:$*" >> "$LOG_PATH"\n'
+            'if [[ "$1" == "diff" ]]; then exit 0; fi\n'
+        )
+        with self.fake_commands(
+            env={"LOG_PATH": str(log)},
+            git=git,
+            gh="echo should not call gh >&2\nexit 1\n",
+        ):
+            with redirect_stdout(StringIO()):
+                self.assertEqual(release.cmd_create_followup_pr(self.followup_args(output=output)), 0)
+        commands = log.read_text(encoding="utf-8")
+        self.assertIn("git:checkout -B release-followup/1.2.3 HEAD", commands)
+        self.assertIn("git:add -A -- examples www", commands)
+        self.assertNotIn("git:commit", commands)
+        self.assertNotIn("git:push", commands)
+        outputs = output.read_text(encoding="utf-8")
+        self.assertIn("changed=false", outputs)
+        self.assertIn("branch=release-followup/1.2.3", outputs)
+
+    def test_create_followup_pr_creates_new_pr(self):
+        log = self.tmp / "commands.log"
+        output = self.tmp / "followup-output.txt"
+        git = (
+            'echo "git:$*" >> "$LOG_PATH"\n'
+            'case "$1" in\n'
+            "  diff) exit 1 ;;\n"
+            "  rev-parse) printf 'abc123\\n'; exit 0 ;;\n"
+            "  ls-remote) exit 0 ;;\n"
+            "esac\n"
+        )
+        gh = (
+            'echo "gh:$*" >> "$LOG_PATH"\n'
+            'if [[ "$1" == "pr" && "$2" == "list" ]]; then printf \'[]\\n\'; exit 0; fi\n'
+            'if [[ "$1" == "pr" && "$2" == "create" ]]; then '
+            "printf 'https://github.com/roc-lang/example/pull/12\\n'; exit 0; fi\n"
+            "exit 1\n"
+        )
+        with self.fake_commands(env={"LOG_PATH": str(log)}, git=git, gh=gh):
+            self.assertEqual(release.cmd_create_followup_pr(self.followup_args(output=output)), 0)
+        commands = log.read_text(encoding="utf-8")
+        self.assertIn("git:commit -m Update docs and examples -- examples www", commands)
+        self.assertIn("git:push origin HEAD:refs/heads/release-followup/1.2.3", commands)
+        self.assertIn("gh:pr list --repo roc-lang/example", commands)
+        self.assertIn("gh:pr create --repo roc-lang/example --base main", commands)
+        self.assertIn("--head roc-lang:release-followup/1.2.3", commands)
+        outputs = output.read_text(encoding="utf-8")
+        self.assertIn("changed=true", outputs)
+        self.assertIn("commit_sha=abc123", outputs)
+        self.assertIn("pull_request_number=12", outputs)
+        self.assertIn("pull_request_url=https://github.com/roc-lang/example/pull/12", outputs)
+
+    def test_create_followup_pr_updates_existing_pr_with_force_with_lease(self):
+        log = self.tmp / "commands.log"
+        git = (
+            'echo "git:$*" >> "$LOG_PATH"\n'
+            'case "$1" in\n'
+            "  diff) exit 1 ;;\n"
+            "  rev-parse) printf 'def456\\n'; exit 0 ;;\n"
+            "  ls-remote) printf 'oldsha\\trefs/heads/release-followup/1.2.3\\n'; exit 0 ;;\n"
+            "esac\n"
+        )
+        gh = (
+            'echo "gh:$*" >> "$LOG_PATH"\n'
+            'if [[ "$1" == "pr" && "$2" == "list" ]]; then '
+            'printf \'[{"number":7,"url":"https://github.com/roc-lang/example/pull/7"}]\\n\'; '
+            "exit 0; fi\n"
+            'if [[ "$1" == "pr" && "$2" == "edit" ]]; then exit 0; fi\n'
+            "exit 1\n"
+        )
+        with self.fake_commands(env={"LOG_PATH": str(log)}, git=git, gh=gh):
+            self.assertEqual(
+                release.cmd_create_followup_pr(
+                    self.followup_args(labels="release, docs", pr_body="Generated follow-up")
+                ),
+                0,
+            )
+        commands = log.read_text(encoding="utf-8")
+        self.assertIn(
+            "git:push --force-with-lease=refs/heads/release-followup/1.2.3:oldsha "
+            "origin HEAD:refs/heads/release-followup/1.2.3",
+            commands,
+        )
+        self.assertIn("gh:pr edit 7 --repo roc-lang/example", commands)
+        self.assertIn("--body Generated follow-up", commands)
+        self.assertIn("--add-label release --add-label docs", commands)
+
+    def test_create_followup_pr_rejects_unsafe_paths(self):
+        for path in ["..", "../www", "/tmp/www", ".", ":/magic", "www\\docs"]:
+            with self.subTest(path=path):
+                with self.assertRaises(release.ReleaseError):
+                    release.cmd_create_followup_pr(self.followup_args(paths=path))
+
+    def test_create_followup_pr_rejects_invalid_branch_prefix(self):
+        with self.assertRaisesRegex(release.ReleaseError, "invalid branch prefix"):
+            release.cmd_create_followup_pr(self.followup_args(branch_prefix="bad prefix"))
+
     # --- publish-release ---
 
     def publish_args(self, version="1.2.3", notes=None, bundle_dir=None, release_list=None, check_availability="true"):

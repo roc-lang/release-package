@@ -128,6 +128,19 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--check-availability", choices=["true", "false"], default="true")
     publish.set_defaults(func=cmd_publish_release)
 
+    followup = subcommands.add_parser("create-followup-pr")
+    followup.add_argument("--release-version", default="")
+    followup.add_argument("--paths", required=True)
+    followup.add_argument("--branch-prefix", default="release-followup")
+    followup.add_argument("--base-branch", default="")
+    followup.add_argument("--commit-message", default="")
+    followup.add_argument("--pr-title", default="")
+    followup.add_argument("--pr-body", default="")
+    followup.add_argument("--labels", default="")
+    followup.add_argument("--repo", default="")
+    followup.add_argument("--github-output", default="")
+    followup.set_defaults(func=cmd_create_followup_pr)
+
     snapshot_docs = subcommands.add_parser("snapshot-docs")
     snapshot_docs.add_argument("--docs-root", required=True)
     snapshot_docs.add_argument("--snapshot-file", required=True)
@@ -524,6 +537,120 @@ def cmd_publish_release(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_create_followup_pr(args: argparse.Namespace) -> int:
+    release_version = parse_release_version(env_fallback(args.release_version, "RELEASE_VERSION"))
+    version = release_version.full
+    repo = require_repo(env_fallback(args.repo, "GITHUB_REPOSITORY"))
+    base_branch = require_branch_name(
+        env_fallback(args.base_branch, "GITHUB_REF_NAME") or current_branch(),
+        "base branch",
+    )
+    branch_prefix = require_branch_name(args.branch_prefix, "branch prefix")
+    branch = require_branch_name(f"{branch_prefix}/{version}", "follow-up branch")
+    paths = parse_followup_paths(args.paths)
+    labels = parse_labels(args.labels)
+    commit_message = require_single_line(
+        args.commit_message or f"Update release follow-up for {version}",
+        "commit message",
+    )
+    pr_title = require_single_line(args.pr_title or commit_message, "PR title")
+    pr_body = args.pr_body or default_followup_pr_body(version, paths)
+    commit_sha = ""
+    pr_number = ""
+    pr_url = ""
+
+    run_required(["git", "checkout", "-B", branch, "HEAD"], f"could not create branch {branch!r}")
+    run_required(["git", "add", "-A", "--", *paths], "could not stage follow-up paths")
+    diff = run(["git", "diff", "--cached", "--quiet", "--", *paths])
+    if diff.returncode == 0:
+        write_followup_outputs(args.github_output, "false", branch, commit_sha, pr_number, pr_url)
+        print("No follow-up changes to commit.")
+        return 0
+    if diff.returncode != 1:
+        raise ReleaseError(f"could not inspect staged follow-up changes: {trim_output(diff)}")
+
+    run_required(
+        ["git", "config", "user.name", "github-actions[bot]"],
+        "could not configure git user.name",
+    )
+    run_required(
+        [
+            "git",
+            "config",
+            "user.email",
+            "41898282+github-actions[bot]@users.noreply.github.com",
+        ],
+        "could not configure git user.email",
+    )
+    run_required(
+        ["git", "commit", "-m", commit_message, "--", *paths],
+        "could not commit follow-up changes",
+    )
+    commit_sha = git_stdout(["git", "rev-parse", "HEAD"], "could not resolve follow-up commit")
+
+    remote_sha = remote_branch_sha(branch)
+    if remote_sha:
+        push = [
+            "git",
+            "push",
+            f"--force-with-lease=refs/heads/{branch}:{remote_sha}",
+            "origin",
+            f"HEAD:refs/heads/{branch}",
+        ]
+    else:
+        push = ["git", "push", "origin", f"HEAD:refs/heads/{branch}"]
+    run_required(push, f"could not push follow-up branch {branch!r}")
+
+    pull_request = find_open_pull_request(repo, base_branch, branch)
+    if pull_request:
+        pr_number, pr_url = pull_request
+        edit = [
+            "gh",
+            "pr",
+            "edit",
+            pr_number,
+            "--repo",
+            repo,
+            "--title",
+            pr_title,
+            "--body",
+            pr_body,
+        ]
+        for label in labels:
+            edit.extend(["--add-label", label])
+        run_required(edit, f"could not update follow-up PR #{pr_number}")
+    else:
+        create = [
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            repo,
+            "--base",
+            base_branch,
+            "--head",
+            f"{repo.split('/', 1)[0]}:{branch}",
+            "--title",
+            pr_title,
+            "--body",
+            pr_body,
+        ]
+        for label in labels:
+            create.extend(["--label", label])
+        result = run(create)
+        if result.returncode != 0:
+            raise ReleaseError(f"could not create follow-up PR: {trim_output(result)}")
+        pr_url = parse_pull_request_url(result.stdout)
+        pr_number = parse_pull_request_number(pr_url)
+        if not pr_url:
+            pull_request = find_open_pull_request(repo, base_branch, branch)
+            if pull_request:
+                pr_number, pr_url = pull_request
+
+    write_followup_outputs(args.github_output, "true", branch, commit_sha, pr_number, pr_url)
+    return 0
+
+
 def cmd_snapshot_docs(args: argparse.Namespace) -> int:
     docs_root = Path(args.docs_root)
     versions = sorted(version_dirs(docs_root))
@@ -759,6 +886,154 @@ def clean_repo_name(repo_name: str) -> str:
     if not repo_name or "\n" in repo_name or "\r" in repo_name or "/" in repo_name:
         raise ReleaseError(f"invalid repository name for docs redirect: {repo_name!r}")
     return repo_name
+
+
+def parse_followup_paths(value: str) -> list[str]:
+    paths = value.split()
+    if not paths:
+        raise ReleaseError("paths must list at least one repo-relative path")
+    return [validate_followup_path(path) for path in paths]
+
+
+def validate_followup_path(path_text: str) -> str:
+    require_single_line(path_text, "follow-up path")
+    path = Path(path_text)
+    if path_text in ("", ".") or path.is_absolute():
+        raise ReleaseError(f"follow-up path must be repo-relative and not the repo root: {path_text!r}")
+    if "\\" in path_text or path_text.startswith(":"):
+        raise ReleaseError(f"follow-up path is not supported: {path_text!r}")
+    if any(part in ("", ".", "..") for part in path.parts):
+        raise ReleaseError(f"follow-up path must not contain . or .. components: {path_text!r}")
+    return path.as_posix()
+
+
+def parse_labels(value: str) -> list[str]:
+    labels: list[str] = []
+    for raw in re.split(r"[\n,]", value):
+        label = raw.strip()
+        if not label:
+            continue
+        require_single_line(label, "PR label")
+        labels.append(label)
+    return labels
+
+
+def require_branch_name(value: str, description: str) -> str:
+    require_single_line(value, description)
+    if not value:
+        raise ReleaseError(f"{description} is required")
+    parts = value.split("/")
+    if (
+        value.startswith(("/", "."))
+        or value.endswith(("/", "."))
+        or "//" in value
+        or ".." in value
+        or "@{" in value
+        or "\\" in value
+        or value.endswith(".lock")
+        or not re.fullmatch(r"[A-Za-z0-9._/-]+", value)
+        or any(part.startswith(".") or part.endswith(".lock") for part in parts)
+    ):
+        raise ReleaseError(f"invalid {description}: {value!r}")
+    return value
+
+
+def default_followup_pr_body(version: str, paths: list[str]) -> str:
+    path_lines = "\n".join(f"- `{path}`" for path in paths)
+    return f"Release follow-up for {version}.\n\nUpdated paths:\n{path_lines}"
+
+
+def current_branch() -> str:
+    return git_stdout(["git", "branch", "--show-current"], "could not determine current branch")
+
+
+def git_stdout(command: list[str], message: str) -> str:
+    result = run(command)
+    if result.returncode != 0:
+        raise ReleaseError(f"{message}: {trim_output(result)}")
+    return require_single_line(result.stdout.strip(), message)
+
+
+def remote_branch_sha(branch: str) -> str:
+    result = run(["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"])
+    if result.returncode != 0:
+        raise ReleaseError(f"could not inspect remote follow-up branch {branch!r}: {trim_output(result)}")
+    if not result.stdout.strip():
+        return ""
+    first_line = result.stdout.strip().splitlines()[0]
+    parts = first_line.split()
+    if len(parts) < 2 or parts[1] != f"refs/heads/{branch}":
+        raise ReleaseError(f"unexpected remote branch response: {first_line!r}")
+    return require_single_line(parts[0], "remote branch SHA")
+
+
+def find_open_pull_request(repo: str, base_branch: str, branch: str) -> tuple[str, str] | None:
+    repo_owner = repo.split("/", 1)[0]
+    result = run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--base",
+            base_branch,
+            "--head",
+            f"{repo_owner}:{branch}",
+            "--json",
+            "number,url",
+            "--limit",
+            "1",
+        ]
+    )
+    if result.returncode != 0:
+        raise ReleaseError(f"could not look up follow-up PR: {trim_output(result)}")
+    try:
+        data = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as err:
+        raise ReleaseError(f"follow-up PR lookup response was not valid JSON: {err}") from err
+    if not data:
+        return None
+    if not isinstance(data, list) or not isinstance(data[0], dict):
+        raise ReleaseError("follow-up PR lookup response had an unexpected shape")
+    number = str(data[0].get("number", ""))
+    url = str(data[0].get("url", ""))
+    if not number or not url:
+        raise ReleaseError("follow-up PR lookup response did not include number and url")
+    return require_single_line(number, "PR number"), require_single_line(url, "PR URL")
+
+
+def parse_pull_request_url(output: str) -> str:
+    match = re.search(r"https://github\.com/[^\s]+/pull/[0-9]+", output)
+    return match.group(0) if match else ""
+
+
+def parse_pull_request_number(url: str) -> str:
+    match = re.search(r"/pull/([0-9]+)$", url)
+    return match.group(1) if match else ""
+
+
+def write_followup_outputs(
+    github_output: str,
+    changed: str,
+    branch: str,
+    commit_sha: str,
+    pr_number: str,
+    pr_url: str,
+) -> None:
+    if not github_output:
+        return
+    outputs = {
+        "changed": changed,
+        "branch": branch,
+        "commit_sha": commit_sha,
+        "pull_request_number": pr_number,
+        "pull_request_url": pr_url,
+    }
+    for name, value in outputs.items():
+        append_github_output(github_output, name, value)
 
 
 def is_meaningful_bump_output(text: str) -> bool:
