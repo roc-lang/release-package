@@ -1,0 +1,50 @@
+name: Run Roc bump check
+description: Verify the requested release version with roc bump.
+inputs:
+  release_version:
+    description: Strict semver release version. Empty uses RELEASE_VERSION env.
+    default: ""
+  dry_run:
+    description: Skip roc bump while still writing a bump output file.
+    default: "false"
+  bump_check:
+    description: How to handle roc bump verification. One of warn, require, or off.
+    default: require
+  bump_entrypoint:
+    description: Package entrypoint passed to roc bump.
+    default: main.roc
+  previous_url:
+    description: Previous bundle URL. Empty falls back to previous_url_file when present.
+    default: ""
+  previous_url_file:
+    description: File written by resolve-previous-release.
+    default: .release/previous-url.txt
+  output_file:
+    description: File where roc bump output is written.
+    default: .release/bump-output.txt
+runs:
+  using: composite
+  steps:
+    - id: bump
+      shell: bash
+      env:
+        RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
+        DRY_RUN: ${{ inputs.dry_run }}
+        BUMP_CHECK: ${{ inputs.bump_check }}
+        BUMP_ENTRYPOINT: ${{ inputs.bump_entrypoint }}
+        PREVIOUS_URL_INPUT: ${{ inputs.previous_url }}
+        PREVIOUS_URL_FILE: ${{ inputs.previous_url_file }}
+        OUTPUT_FILE: ${{ inputs.output_file }}
+      run: |
+        set -euo pipefail
+        previous_url="$PREVIOUS_URL_INPUT"
+        if [[ "$DRY_RUN" == "false" && -z "$previous_url" && -f "$PREVIOUS_URL_FILE" ]]; then
+          previous_url="$(cat "$PREVIOUS_URL_FILE")"
+        fi
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" run-bump-check \
+          --mode "$BUMP_CHECK" \
+          --version "$RELEASE_VERSION_INPUT" \
+          --entrypoint "$BUMP_ENTRYPOINT" \
+          --previous-url "$previous_url" \
+          --output-file "$OUTPUT_FILE" \
+          --dry-run "$DRY_RUN"

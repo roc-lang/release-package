@@ -1,0 +1,55 @@
+name: Prepare Roc release bundles
+description: Validate release bundle metadata, copy assets, and produce test matrix JSON.
+inputs:
+  bundle_glob:
+    description: Glob for release artifacts.
+    default: dist/*.tar.zst
+  bundle_manifest_path:
+    description: Optional JSON manifest for multi-bundle releases.
+    default: ""
+  test_os_json:
+    description: JSON array of GitHub runner labels used when no manifest is provided.
+    default: '["ubuntu-latest","macos-latest","windows-latest"]'
+  workspace:
+    description: Workspace root. Empty uses GITHUB_WORKSPACE.
+    default: ""
+  bundle_dir:
+    description: Directory where validated release bundles are copied.
+    default: .release/bundles
+  matrix_file:
+    description: File where bundle test matrix JSON is written.
+    default: .release/test-matrix.json
+  release_list_file:
+    description: File where release bundle list JSON is written.
+    default: .release/release-bundles.json
+outputs:
+  test_matrix:
+    description: Compact JSON matrix include list for bundle tests.
+    value: ${{ steps.prepare.outputs.test_matrix }}
+  release_bundles:
+    description: Compact JSON list of release bundle assets.
+    value: ${{ steps.prepare.outputs.release_bundles }}
+runs:
+  using: composite
+  steps:
+    - id: prepare
+      shell: bash
+      env:
+        BUNDLE_GLOB: ${{ inputs.bundle_glob }}
+        BUNDLE_MANIFEST_PATH: ${{ inputs.bundle_manifest_path }}
+        TEST_OS_JSON: ${{ inputs.test_os_json }}
+        WORKSPACE_INPUT: ${{ inputs.workspace }}
+        BUNDLE_DIR: ${{ inputs.bundle_dir }}
+        MATRIX_FILE: ${{ inputs.matrix_file }}
+        RELEASE_LIST_FILE: ${{ inputs.release_list_file }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" prepare-bundles \
+          --bundle-glob "$BUNDLE_GLOB" \
+          --bundle-manifest-path "$BUNDLE_MANIFEST_PATH" \
+          --test-os-json "$TEST_OS_JSON" \
+          --workspace "$WORKSPACE_INPUT" \
+          --bundle-dir "$BUNDLE_DIR" \
+          --matrix-file "$MATRIX_FILE" \
+          --release-list-file "$RELEASE_LIST_FILE" \
+          --github-output "$GITHUB_OUTPUT"

@@ -1,0 +1,54 @@
+name: Publish Roc release
+description: Create the semver git tag and GitHub release from prepared bundles.
+inputs:
+  release_version:
+    description: Release version. Empty uses RELEASE_VERSION env.
+    default: ""
+  release_notes_file:
+    description: Release notes file.
+    default: .release/release-notes.md
+  bundle_dir:
+    description: Directory containing release bundle assets.
+    default: .release/bundles
+  release_list_file:
+    description: File listing release bundle assets produced by prepare-bundles.
+    default: .release/release-bundles.json
+  repo:
+    description: GitHub repository in owner/name form. Empty uses GITHUB_REPOSITORY.
+    default: ""
+  target:
+    description: Target commit-ish for the tag and release. Empty uses GITHUB_SHA.
+    default: ""
+  check_availability:
+    description: Whether to re-check tag/release availability before publishing.
+    default: "true"
+  github_token:
+    description: Optional token for GitHub CLI calls. Empty uses existing GH_TOKEN/GITHUB_TOKEN env.
+    default: ""
+runs:
+  using: composite
+  steps:
+    - id: publish
+      shell: bash
+      env:
+        RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
+        RELEASE_NOTES_FILE: ${{ inputs.release_notes_file }}
+        BUNDLE_DIR: ${{ inputs.bundle_dir }}
+        RELEASE_LIST_FILE: ${{ inputs.release_list_file }}
+        REPO_INPUT: ${{ inputs.repo }}
+        TARGET_INPUT: ${{ inputs.target }}
+        CHECK_AVAILABILITY: ${{ inputs.check_availability }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+        if [[ -n "$GITHUB_TOKEN_INPUT" ]]; then
+          export GH_TOKEN="$GITHUB_TOKEN_INPUT"
+        fi
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" publish-release \
+          --version "$RELEASE_VERSION_INPUT" \
+          --repo "$REPO_INPUT" \
+          --target "$TARGET_INPUT" \
+          --notes-file "$RELEASE_NOTES_FILE" \
+          --bundle-dir "$BUNDLE_DIR" \
+          --release-list-file "$RELEASE_LIST_FILE" \
+          --check-availability "$CHECK_AVAILABILITY"

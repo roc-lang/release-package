@@ -1,0 +1,50 @@
+name: Test Roc release bundle
+description: Run a caller-provided test command against one release bundle.
+inputs:
+  test_bundle_command:
+    description: Command prefix that receives the absolute bundle path as its final argument.
+    required: true
+  bundle_path:
+    description: Path to the downloaded bundle artifact.
+    required: true
+  bundle_name:
+    description: Bundle name exposed as BUNDLE_NAME.
+    default: ""
+  release_version:
+    description: Release version exposed as RELEASE_VERSION. Empty uses RELEASE_VERSION env.
+    default: ""
+runs:
+  using: composite
+  steps:
+    - id: test
+      shell: bash
+      env:
+        TEST_BUNDLE_COMMAND: ${{ inputs.test_bundle_command }}
+        BUNDLE_PATH_INPUT: ${{ inputs.bundle_path }}
+        BUNDLE_NAME_INPUT: ${{ inputs.bundle_name }}
+        RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
+      run: |
+        set -euo pipefail
+
+        bundle_path="$BUNDLE_PATH_INPUT"
+        if [[ ! -f "$bundle_path" ]]; then
+          echo "Bundle artifact is missing: $bundle_path" >&2
+          exit 1
+        fi
+        if [[ "$bundle_path" != /* ]]; then
+          bundle_path="$PWD/$bundle_path"
+        fi
+
+        release_version="$RELEASE_VERSION_INPUT"
+        if [[ -z "$release_version" ]]; then
+          release_version="${RELEASE_VERSION:-}"
+        fi
+        if [[ -z "$release_version" ]]; then
+          echo "release_version input or RELEASE_VERSION env is required." >&2
+          exit 2
+        fi
+
+        export BUNDLE_NAME="$BUNDLE_NAME_INPUT"
+        export BUNDLE_PATH="$bundle_path"
+        export RELEASE_VERSION="$release_version"
+        bash "$GITHUB_ACTION_PATH/../../scripts/release/run-command.sh" --append-args TEST_BUNDLE_COMMAND "$bundle_path"

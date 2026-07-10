@@ -1,0 +1,22 @@
+name: Snapshot Roc docs
+description: Snapshot existing versioned docs directories before docs generation.
+inputs:
+  docs_root:
+    description: Directory containing generated docs.
+    default: www
+  snapshot_file:
+    description: File where existing docs versions are recorded.
+    default: .release/docs-before.json
+runs:
+  using: composite
+  steps:
+    - id: snapshot
+      shell: bash
+      env:
+        DOCS_ROOT: ${{ inputs.docs_root }}
+        SNAPSHOT_FILE: ${{ inputs.snapshot_file }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" snapshot-docs \
+          --docs-root "$DOCS_ROOT" \
+          --snapshot-file "$SNAPSHOT_FILE"

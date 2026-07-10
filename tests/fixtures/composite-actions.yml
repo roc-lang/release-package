@@ -1,0 +1,108 @@
+name: Composite action fixture
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.validate.outputs.release_version }}
+      docs_version: ${{ steps.validate.outputs.docs_version }}
+      test_matrix: ${{ steps.bundles.outputs.test_matrix }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - id: validate
+        uses: ./actions/validate-release
+        with:
+          dry_run: "true"
+
+      - id: previous
+        uses: ./actions/resolve-previous-release
+        with:
+          previous_release_url: https://example.com/pkg.tar.zst
+
+      - uses: ./actions/run-bump-check
+        with:
+          release_version: ${{ steps.validate.outputs.release_version }}
+          dry_run: "true"
+          bump_check: require
+
+      - run: |
+          mkdir -p dist
+          printf 'bundle' > dist/pkg.tar.zst
+
+      - id: bundles
+        uses: ./actions/prepare-bundles
+        with:
+          test_os_json: '["ubuntu-latest"]'
+
+  test-bundles:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.build.outputs.test_matrix) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - run: |
+          mkdir -p .release/test-bundles
+          printf 'bundle' > ".release/test-bundles/${{ matrix.artifact_file }}"
+
+      - uses: ./actions/test-bundle
+        with:
+          test_bundle_command: test -f
+          bundle_path: .release/test-bundles/${{ matrix.artifact_file }}
+          bundle_name: ${{ matrix.bundle_name }}
+          release_version: ${{ needs.build.outputs.release_version }}
+
+  publish:
+    needs:
+      - build
+      - test-bundles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - run: |
+          mkdir -p .release/bundles
+          printf 'bundle' > .release/bundles/pkg.tar.zst
+          printf '[{"name":"default","artifact_file":"pkg.tar.zst","source_path":"dist/pkg.tar.zst"}]\n' > .release/release-bundles.json
+
+      - uses: ./actions/make-release-notes
+        with:
+          release_version: ${{ needs.build.outputs.release_version }}
+          release_notes_command: |
+            printf 'Release notes\n' > "$RELEASE_NOTES_PATH"
+
+      - uses: ./actions/publish-release
+        with:
+          release_version: ${{ needs.build.outputs.release_version }}
+          check_availability: "false"
+
+  docs:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - uses: ./actions/docs-snapshot
+
+      - run: |
+          mkdir -p "www/${{ needs.build.outputs.docs_version }}"
+          printf '<!doctype html>\n' > "www/${{ needs.build.outputs.docs_version }}/index.html"
+
+      - uses: ./actions/docs-index
+        with:
+          docs_version: ${{ needs.build.outputs.docs_version }}
+          repo_name: example
+
+      - uses: ./actions/docs-validate
+        with:
+          docs_version: ${{ needs.build.outputs.docs_version }}

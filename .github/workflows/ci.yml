@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test release package tooling
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Run Python tests
+        run: python3 -m unittest discover -s tests
+
+      - name: Shellcheck release scripts and composite actions
+        run: |
+          set -euo pipefail
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
+          shellcheck --shell=bash --severity=info scripts/release/run-command.sh
+          python3 scripts/lint_action_shell.py
+
+      - name: Install actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=1.7.12
+          archive="actionlint_${version}_linux_amd64.tar.gz"
+          checksums="actionlint_${version}_checksums.txt"
+          base_url="https://github.com/rhysd/actionlint/releases/download/v${version}"
+          curl -fsSLO "$base_url/$archive"
+          curl -fsSLO "$base_url/$checksums"
+          grep "  $archive\$" "$checksums" > actionlint.sha256
+          sha256sum -c actionlint.sha256
+          tar -xzf "$archive" actionlint
+          echo "$PWD" >> "$GITHUB_PATH"
+
+      - name: Lint workflows
+        run: |
+          actionlint
+          actionlint tests/fixtures/composite-actions.yml

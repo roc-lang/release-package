@@ -1,0 +1,37 @@
+name: Update Roc docs index
+description: Write a docs root redirect/index for the selected docs version.
+inputs:
+  docs_root:
+    description: Directory containing generated docs.
+    default: www
+  docs_version:
+    description: Docs version. Empty uses DOCS_VERSION or RELEASE_VERSION env.
+    default: ""
+  repo_name:
+    description: Repository name for Pages redirect paths. Empty uses GITHUB_REPOSITORY.
+    default: ""
+  update_prerelease_index:
+    description: Whether prerelease docs should update the docs root redirect.
+    default: "false"
+outputs:
+  index_file:
+    description: Docs root index file. Empty when the prerelease index update was skipped.
+    value: ${{ steps.index.outputs.index_file }}
+runs:
+  using: composite
+  steps:
+    - id: index
+      shell: bash
+      env:
+        DOCS_ROOT: ${{ inputs.docs_root }}
+        DOCS_VERSION_INPUT: ${{ inputs.docs_version }}
+        REPO_NAME_INPUT: ${{ inputs.repo_name }}
+        UPDATE_PRERELEASE_INDEX: ${{ inputs.update_prerelease_index }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" write-docs-index \
+          --docs-root "$DOCS_ROOT" \
+          --docs-version "$DOCS_VERSION_INPUT" \
+          --repo-name "$REPO_NAME_INPUT" \
+          --update-prerelease-index "$UPDATE_PRERELEASE_INDEX" \
+          --github-output "$GITHUB_OUTPUT"

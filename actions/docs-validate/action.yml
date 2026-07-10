@@ -1,0 +1,27 @@
+name: Validate Roc docs
+description: Validate generated versioned docs and preserved historical docs.
+inputs:
+  docs_root:
+    description: Directory containing generated docs.
+    default: www
+  docs_version:
+    description: Docs version. Empty uses DOCS_VERSION or RELEASE_VERSION env.
+    default: ""
+  snapshot_file:
+    description: File written by docs-snapshot.
+    default: .release/docs-before.json
+runs:
+  using: composite
+  steps:
+    - id: validate
+      shell: bash
+      env:
+        DOCS_ROOT: ${{ inputs.docs_root }}
+        DOCS_VERSION_INPUT: ${{ inputs.docs_version }}
+        SNAPSHOT_FILE: ${{ inputs.snapshot_file }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" validate-docs \
+          --docs-root "$DOCS_ROOT" \
+          --docs-version "$DOCS_VERSION_INPUT" \
+          --snapshot-file "$SNAPSHOT_FILE"
