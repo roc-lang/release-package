@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_ACTIONS = {
+    "create-followup-pr",
     "docs-index",
     "docs-snapshot",
     "docs-validate",

@@ -1,0 +1,81 @@
+name: Create release follow-up PR
+description: Commit generated release follow-up changes to a branch and open or update a pull request.
+inputs:
+  release_version:
+    description: Release version. Empty uses RELEASE_VERSION env.
+    default: ""
+  paths:
+    description: Whitespace-separated repo-relative paths to stage and commit.
+    required: true
+  branch_prefix:
+    description: Prefix for the deterministic follow-up branch.
+    default: release-followup
+  base_branch:
+    description: Base branch for the pull request. Empty uses GITHUB_REF_NAME or the current branch.
+    default: ""
+  commit_message:
+    description: Commit message. Empty uses a default message based on release_version.
+    default: ""
+  pr_title:
+    description: Pull request title. Empty uses commit_message.
+    default: ""
+  pr_body:
+    description: Pull request body. Empty uses a default body based on release_version and paths.
+    default: ""
+  labels:
+    description: Optional comma- or newline-separated labels to add to the pull request.
+    default: ""
+  repo:
+    description: GitHub repository in owner/name form. Empty uses GITHUB_REPOSITORY.
+    default: ""
+  github_token:
+    description: Optional token for GitHub CLI calls. Empty uses existing GH_TOKEN/GITHUB_TOKEN env.
+    default: ""
+outputs:
+  changed:
+    description: Whether a follow-up commit and PR were created or updated.
+    value: ${{ steps.followup.outputs.changed }}
+  branch:
+    description: Follow-up branch name.
+    value: ${{ steps.followup.outputs.branch }}
+  commit_sha:
+    description: Follow-up commit SHA. Empty when changed is false.
+    value: ${{ steps.followup.outputs.commit_sha }}
+  pull_request_number:
+    description: Pull request number. Empty when changed is false or unavailable.
+    value: ${{ steps.followup.outputs.pull_request_number }}
+  pull_request_url:
+    description: Pull request URL. Empty when changed is false or unavailable.
+    value: ${{ steps.followup.outputs.pull_request_url }}
+runs:
+  using: composite
+  steps:
+    - id: followup
+      shell: bash
+      env:
+        RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
+        PATHS_INPUT: ${{ inputs.paths }}
+        BRANCH_PREFIX: ${{ inputs.branch_prefix }}
+        BASE_BRANCH: ${{ inputs.base_branch }}
+        COMMIT_MESSAGE: ${{ inputs.commit_message }}
+        PR_TITLE: ${{ inputs.pr_title }}
+        PR_BODY: ${{ inputs.pr_body }}
+        LABELS: ${{ inputs.labels }}
+        REPO_INPUT: ${{ inputs.repo }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+        if [[ -n "$GITHUB_TOKEN_INPUT" ]]; then
+          export GH_TOKEN="$GITHUB_TOKEN_INPUT"
+        fi
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release/release.py" create-followup-pr \
+          --release-version "$RELEASE_VERSION_INPUT" \
+          --paths "$PATHS_INPUT" \
+          --branch-prefix "$BRANCH_PREFIX" \
+          --base-branch "$BASE_BRANCH" \
+          --commit-message "$COMMIT_MESSAGE" \
+          --pr-title "$PR_TITLE" \
+          --pr-body "$PR_BODY" \
+          --labels "$LABELS" \
+          --repo "$REPO_INPUT" \
+          --github-output "$GITHUB_OUTPUT"

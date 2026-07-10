@@ -106,3 +106,14 @@ jobs:
       - uses: ./actions/docs-validate
         with:
           docs_version: ${{ needs.build.outputs.docs_version }}
+
+      - uses: ./actions/create-followup-pr
+        with:
+          release_version: ${{ needs.build.outputs.release_version }}
+          paths: |
+            examples
+            www
+          branch_prefix: release-followup
+          base_branch: main
+          commit_message: Update docs and examples for ${{ needs.build.outputs.release_version }}
+          pr_title: Update docs and examples for ${{ needs.build.outputs.release_version }}
