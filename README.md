@@ -81,6 +81,12 @@ release metadata, or untrusted workflow inputs.
 
 Prefer job-level permissions when only one job needs write access.
 
+For workflows that use `create-followup-pr` with `${{ github.token }}`, the
+caller repo must also allow Actions to create pull requests. In GitHub, enable
+Settings -> Actions -> General -> Workflow permissions -> "Allow GitHub Actions
+to create and approve pull requests". Without this repo-level setting, GitHub
+can reject PR creation even when the job has `pull-requests: write`.
+
 ## Minimal Package Release
 
 This template is for a Roc package using prebuilt platform hosts. It installs
@@ -486,6 +492,18 @@ push directly to the base branch.
 The branch is `${branch_prefix}/${release_version}`, for example
 `release-followup/1.2.3`. Reruns for the same version update that branch with
 `--force-with-lease` and update the existing open PR when one exists.
+
+If the action fails with `GitHub Actions is not permitted to create or approve
+pull requests`, enable the caller repo setting that allows Actions to create
+pull requests. The equivalent `gh` command is:
+
+```bash
+gh api \
+  --method PUT \
+  repos/OWNER/REPO/actions/permissions/workflow \
+  -f default_workflow_permissions=read \
+  -F can_approve_pull_request_reviews=true
+```
 
 Keep repo-specific content generation in the package repo: deriving release
 bundle URLs, rewriting example URLs, generating docs, deciding skipped examples,
