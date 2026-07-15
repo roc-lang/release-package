@@ -564,7 +564,12 @@ the matching upload and download steps together.
 - `.release/release-bundles.json`
 
 `publish-release` defaults to `.release/release-bundles.json` as its asset
-manifest and uploads only the listed `.tar.zst` files from `.release/bundles`.
+manifest and uploads the listed `.tar.zst` files from `.release/bundles`.
+Use its `additional_assets` input for newline-separated paths to other release
+files, such as documentation archives. All bundle and additional assets are
+passed to the same `gh release create` invocation so they are attached before
+the release is published. This is required when immutable releases are enabled;
+assets cannot be uploaded to an immutable release after publication.
 
 For release candidates such as `1.2.3-rc1`, `resolve-previous-release` still
 uses GitHub's latest stable release as the default previous bundle. Set
