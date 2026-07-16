@@ -125,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--notes-file", required=True)
     publish.add_argument("--bundle-dir", required=True)
     publish.add_argument("--release-list-file", required=True)
+    publish.add_argument("--additional-assets", default="")
     publish.add_argument("--check-availability", choices=["true", "false"], default="true")
     publish.set_defaults(func=cmd_publish_release)
 
@@ -494,6 +495,8 @@ def cmd_publish_release(args: argparse.Namespace) -> int:
     target = require_target(env_fallback(args.target, "GITHUB_SHA"))
     notes_file = require_nonempty_file(args.notes_file, "release notes file")
     assets = release_assets(args.bundle_dir, args.release_list_file)
+    assets.extend(additional_release_assets(args.additional_assets))
+    require_unique_release_asset_names(assets)
 
     if args.check_availability == "true":
         check_availability(version, repo)
@@ -1145,6 +1148,28 @@ def release_assets(bundle_dir_text: str | Path, release_list_file_text: str | Pa
         if not asset.is_file():
             raise ReleaseError(f"release asset is missing: {asset}")
     return assets
+
+
+def additional_release_assets(value: str) -> list[Path]:
+    assets: list[Path] = []
+    for line in value.splitlines():
+        path_text = line.strip()
+        if not path_text:
+            continue
+        if "#" in path_text:
+            raise ReleaseError(
+                f"additional release asset path must not contain '#': {path_text}"
+            )
+        assets.append(require_nonempty_file(path_text, "additional release asset"))
+    return assets
+
+
+def require_unique_release_asset_names(assets: list[Path]) -> None:
+    seen: set[str] = set()
+    for asset in assets:
+        if asset.name in seen:
+            raise ReleaseError(f"duplicate release asset filename: {asset.name}")
+        seen.add(asset.name)
 
 
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:

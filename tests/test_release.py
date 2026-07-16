@@ -777,7 +777,15 @@ class ReleaseHelpersTest(unittest.TestCase):
 
     # --- publish-release ---
 
-    def publish_args(self, version="1.2.3", notes=None, bundle_dir=None, release_list=None, check_availability="true"):
+    def publish_args(
+        self,
+        version="1.2.3",
+        notes=None,
+        bundle_dir=None,
+        release_list=None,
+        additional_assets="",
+        check_availability="true",
+    ):
         return parse_args(
             "publish-release",
             "--version", version,
@@ -786,6 +794,7 @@ class ReleaseHelpersTest(unittest.TestCase):
             "--notes-file", str(notes),
             "--bundle-dir", str(bundle_dir),
             "--release-list-file", str(release_list),
+            "--additional-assets", additional_assets,
             "--check-availability", check_availability,
         )
 
@@ -834,6 +843,57 @@ class ReleaseHelpersTest(unittest.TestCase):
         self.assertIn(str(bundle_dir / "pkg.tar.zst"), commands)
         self.assertNotIn("debug.txt", commands)
         self.assertIn("--notes-file", commands)
+
+    def test_publish_release_includes_additional_assets(self):
+        log = self.tmp / "commands.log"
+        notes = self.write("release-notes.md", "Generated notes\n")
+        bundle_dir = self.tmp / "bundles"
+        bundle_dir.mkdir()
+        self.write("bundles/pkg.tar.zst", "bundle")
+        docs = self.write("docs.tar.gz", "docs")
+        release_list = self.write(
+            "release-bundles.json",
+            json.dumps([{"name": "default", "artifact_file": "pkg.tar.zst"}]),
+        )
+        with self.fake_commands(
+            env={"LOG_PATH": str(log)},
+            git='echo "git:$*" >> "$LOG_PATH"\n',
+            gh='echo "gh:$*" >> "$LOG_PATH"\n',
+        ):
+            release.cmd_publish_release(
+                self.publish_args(
+                    notes=notes,
+                    bundle_dir=bundle_dir,
+                    release_list=release_list,
+                    additional_assets=f"\n{docs}\n",
+                    check_availability="false",
+                )
+            )
+        commands = log.read_text(encoding="utf-8")
+        self.assertIn(f"gh:release create 1.2.3 {bundle_dir / 'pkg.tar.zst'} {docs}", commands)
+
+    def test_publish_release_rejects_duplicate_additional_asset_filename(self):
+        notes = self.write("release-notes.md", "Generated notes\n")
+        bundle_dir = self.tmp / "bundles"
+        bundle_dir.mkdir()
+        self.write("bundles/pkg.tar.zst", "bundle")
+        additional_dir = self.tmp / "additional"
+        additional_dir.mkdir()
+        duplicate = self.write("additional/pkg.tar.zst", "duplicate")
+        release_list = self.write(
+            "release-bundles.json",
+            json.dumps([{"name": "default", "artifact_file": "pkg.tar.zst"}]),
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "duplicate release asset filename"):
+            release.cmd_publish_release(
+                self.publish_args(
+                    notes=notes,
+                    bundle_dir=bundle_dir,
+                    release_list=release_list,
+                    additional_assets=str(duplicate),
+                    check_availability="false",
+                )
+            )
 
     def test_publish_release_marks_prerelease(self):
         log = self.tmp / "commands.log"

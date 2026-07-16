@@ -73,6 +73,7 @@ jobs:
       - run: |
           mkdir -p .release/bundles
           printf 'bundle' > .release/bundles/pkg.tar.zst
+          printf 'docs' > docs.tar.gz
           printf '[{"name":"default","artifact_file":"pkg.tar.zst","source_path":"dist/pkg.tar.zst"}]\n' > .release/release-bundles.json
 
       - uses: ./actions/make-release-notes
@@ -84,6 +85,7 @@ jobs:
       - uses: ./actions/publish-release
         with:
           release_version: ${{ needs.build.outputs.release_version }}
+          additional_assets: docs.tar.gz
           check_availability: "false"
 
   docs:
