@@ -721,7 +721,13 @@ class ReleaseHelpersTest(unittest.TestCase):
         commands = log.read_text(encoding="utf-8")
         self.assertIn("git:commit -m Update docs and examples -- examples www", commands)
         self.assertIn("git:push origin HEAD:refs/heads/release-followup/1.2.3", commands)
-        self.assertIn("gh:pr list --repo roc-lang/example", commands)
+        # `pr list --head` matches headRefName literally, so it takes the bare
+        # branch; `pr create --head` takes the owner-qualified form.
+        self.assertIn(
+            "gh:pr list --repo roc-lang/example --state open --base main "
+            "--head release-followup/1.2.3",
+            commands,
+        )
         self.assertIn("gh:pr create --repo roc-lang/example --base main", commands)
         self.assertIn("--head roc-lang:release-followup/1.2.3", commands)
         outputs = output.read_text(encoding="utf-8")
@@ -761,6 +767,12 @@ class ReleaseHelpersTest(unittest.TestCase):
             "origin HEAD:refs/heads/release-followup/1.2.3",
             commands,
         )
+        self.assertIn(
+            "gh:pr list --repo roc-lang/example --state open --base main "
+            "--head release-followup/1.2.3",
+            commands,
+        )
+        self.assertNotIn("gh:pr create", commands)
         self.assertIn("gh:pr edit 7 --repo roc-lang/example", commands)
         self.assertIn("--body Generated follow-up", commands)
         self.assertIn("--add-label release --add-label docs", commands)
