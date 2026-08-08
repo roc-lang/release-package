@@ -971,7 +971,6 @@ def remote_branch_sha(branch: str) -> str:
 
 
 def find_open_pull_request(repo: str, base_branch: str, branch: str) -> tuple[str, str] | None:
-    repo_owner = repo.split("/", 1)[0]
     result = run(
         [
             "gh",
@@ -983,8 +982,11 @@ def find_open_pull_request(repo: str, base_branch: str, branch: str) -> tuple[st
             "open",
             "--base",
             base_branch,
+            # `gh pr list --head` matches headRefName literally, so it must get the
+            # bare branch name. An `owner:branch` value never matches and silently
+            # returns no results, which sends an update straight into `pr create`.
             "--head",
-            f"{repo_owner}:{branch}",
+            branch,
             "--json",
             "number,url",
             "--limit",
